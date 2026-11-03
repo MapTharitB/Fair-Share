@@ -1,0 +1,19 @@
+/* Owner-directed refinements layered over the approved Parser styles. */
+.import-error{margin:12px 0;color:#ffb6a8;font-size:13px;line-height:1.6}
+.submit-wrap-inner{padding-bottom:max(14px,env(safe-area-inset-bottom))}.submit-btn:disabled{opacity:.6}
+button.vision-upload-area{display:block;width:100%;font:inherit;color:inherit;background:var(--bg2)}
+button.vision-upload-area:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+.receipt-history-row{display:flex!important;justify-content:flex-end}.receipt-history-row[hidden]{display:none!important}
+.receipt-history-row .history-controls{width:100%}.receipt-history-row .history-button{flex:1}
+.receipt-ta{min-height:240px}#ocr-prog-ov:not(.vis){visibility:hidden}#ocr-prog-ov{padding:16px}#ocr-prog-ov .ocr-prog-box{box-sizing:border-box;max-height:calc(100dvh - 32px);overflow:auto;min-width:0}#ocr-cancel{margin:18px auto 0;min-height:44px;padding:8px 22px}#ocr-prog-fill{transition:width .12s linear}
+#ocr-prog-ov.preparing #ocr-prog-fill{width:35%!important;animation:ocr-prepare 1.4s ease-in-out infinite}
+@keyframes ocr-prepare{from{transform:translateX(-110%)}to{transform:translateX(300%)}}
+@media(prefers-reduced-motion:reduce){#ocr-prog-ov.preparing #ocr-prog-fill{animation:none}#ocr-prog-fill,#ocr-prog-ov{transition:none}}
+
+#ocr-prog-ov .ocr-prog-box{padding-bottom:24px}#ocr-cancel{display:block;margin:24px auto 0;box-shadow:none;outline:none}#ocr-cancel:focus,#ocr-cancel:active{box-shadow:none}#ocr-cancel:focus-visible{outline:1px solid var(--gold2);outline-offset:3px}#ocr-prog-note{margin:0 0 12px}
+#ocr-title:focus{outline:none}
+
+.receipt-target-notice{padding:12px 20px;background:#2A2520;color:#F0EAE0;overflow-wrap:anywhere}.receipt-target-notice button,.receipt-target-notice a{display:inline-block;min-height:44px;padding:10px;color:#ECA46C;background:#211D17;border:1px solid #463F36;border-radius:8px;font:inherit;margin-right:8px}
+
+.top-title:focus{outline:none}
+.top-title,button{-webkit-tap-highlight-color:transparent}
