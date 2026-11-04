@@ -4,7 +4,7 @@ import {createBillSession} from './bill-session.mjs';
 import {createEditorActions} from './editor-actions.mjs';
 import {mountHistoryControls} from './history-controls.mjs';
 import {openReceiptImport} from './receipt-import-dialog.mjs';
-import {openSheet} from './in-app-confirm.mjs';
+import {createRecoveryNotice,openSheet} from './in-app-confirm.mjs';
 import {mountReceiptLayout,updateReceiptPlaceholder,RECEIPT_PLACEHOLDER} from './receipt-layout.mjs';
 import {getDerivedValues,initializeSummaryEdits} from './receipt-parser.mjs';
 import {createReceiptReview,receiptSummary,normalizeReviewDraft,buildReviewedDraft,copyReceiptForImport} from './receipt-draft.mjs';
@@ -17,10 +17,9 @@ const editors=createEditorActions();
 let tabStorage;try{tabStorage=sessionStorage;}catch{}
 const billId=new URL(location.href).searchParams.get('bill');
 const draftKey='fairshare.approved-parser.v3:'+billId;
-let repository,billSession,targetError='',draftStorageFailed=false,rawDraftEvidence=null,oldDraftEvidence=null,targetMissing=false,leavingReceipt=false;
+let repository,billSession,targetError='',draftStorageFailed=false,rawDraftEvidence=null,targetMissing=false,leavingReceipt=false;
 try{
   if(billId)rawDraftEvidence=tabStorage?.getItem(draftKey)??null;
-  oldDraftEvidence=tabStorage?.getItem('fairshare.approved-parser')??null;
 }catch{draftStorageFailed=true;}
 try{
   repository=await openBillRepository();
@@ -33,7 +32,7 @@ let baseRevision=billSession?.record?.recordRevision??null,layoutCleanup=()=>{},
 function returnUrl(){
   const url=new URL('../index.html',import.meta.url);
   if(billId)url.searchParams.set('bill',billId);
-  if(targetMissing||!billId)url.searchParams.set('select','1');
+  if(targetMissing||!billId){url.searchParams.delete('bill');url.searchParams.set('select','1');}
   return url.href;
 }
 function reviewData(){return {schema:3,billId,baseRevision,raw:state.raw,rows:state.rows,summarySource:state.summarySource,summaryEdits:state.summaryEdits,discountCanonical:state.discountCanonical,colOrder:state.colOrder,importMode:state.importMode,importAssignments:state.importAssignments,page:state.page,draft:lastDraft};}
@@ -99,7 +98,7 @@ async function setVisionImage(file){
       }
     });
     if(token!==localReadToken)return;
-    if(state.raw!==startingRaw)throw Error('เก็บข้อความที่คุณวางไว้ให้แล้ว ลองเลือกรูปอีกครั้ง');
+    if(state.raw!==startingRaw)throw Error('ข้อความที่คุณวางยังอยู่ในหน้านี้ ลองเลือกรูปอีกครั้ง');
     overlay.classList.remove('preparing');ocrSetProgress('อ่านรูปแล้ว',100,null);
     if(!matchMedia('(prefers-reduced-motion: reduce)').matches)await new Promise(resolve=>setTimeout(resolve,120));
     if(token!==localReadToken)return;
@@ -379,7 +378,7 @@ function downloadReceiptWork(){
 function hasReceiptWork(){return !!state.raw||rawDraftEvidence!==null;}
 async function returnToBill(destination=returnUrl()){
   if(!persistDraft()&&hasReceiptWork()){
-    const result=await openSheet({title:'ยังเก็บฉบับร่างไม่ได้',body:'<p>ดาวน์โหลดฉบับร่างก่อนกลับไปยังบิล หรืออยู่หน้านี้เพื่อแก้ต่อ</p>',actions:[
+    const result=await openSheet({title:'ไม่สามารถบันทึกฉบับร่างได้ขณะนี้',body:'<p>ดาวน์โหลดฉบับร่างก่อนกลับไปยังบิล หรืออยู่หน้านี้เพื่อแก้ต่อ</p>',actions:[
       {label:'แก้ต่อ',value:false},
       {label:'ดาวน์โหลดฉบับร่างและกลับ',run:async()=>{downloadReceiptWork();return true;}}
     ]});
@@ -388,35 +387,18 @@ async function returnToBill(destination=returnUrl()){
   leavingReceipt=true;
   location.href=destination;
 }
+const recovery=createRecoveryNotice({getModel:async()=>({
+  title:targetMissing?'ไม่สามารถเปิดบิลได้':'ไม่สามารถบันทึกบิลได้ขณะนี้',
+  message:targetMissing?'ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์'+(state.raw?' ข้อความใบเสร็จยังอยู่ในหน้านี้':''):hasReceiptWork()?'ดาวน์โหลดข้อความหรือฉบับร่างใบเสร็จก่อนปิดหน้านี้':'ไม่สามารถเข้าถึงข้อมูลบิลได้ขณะนี้',
+  actions:[
+    ...(state.raw?[{label:'ดาวน์โหลดข้อความใบเสร็จ',run:downloadReceiptText}]:[]),
+    ...(hasReceiptWork()?[{label:'ดาวน์โหลดฉบับร่างใบเสร็จ',id:'download-receipt-evidence',run:downloadReceiptWork}]:[]),
+    {label:'กลับไปยังบิล',run:()=>returnToBill()},
+    ...(!targetMissing&&repository?.connectionError!=='VersionError'?[{label:'ลองบันทึกอีกครั้ง',run:async()=>{await checkTarget();persistDraft();showStorageNotice();}}]:[])
+  ]
+}),fallback:()=>document.getElementById('parseBtn')??document.getElementById('submitBtn')});
 function showStorageNotice(){
-  document.getElementById('receipt-storage-notice')?.remove();
-  if(!targetError&&!draftStorageFailed&&!draftNotice&&oldDraftEvidence===null)return;
-  const notice=document.createElement('div'),message=document.createElement('p');
-  notice.id='receipt-storage-notice';
-  notice.className='receipt-target-notice';
-  notice.setAttribute('role','status');
-  message.textContent=targetError||draftNotice||
-    (draftStorageFailed?'ยังเก็บฉบับร่างไม่ได้ ดาวน์โหลดฉบับร่างก่อนออกจากหน้านี้':'พบฉบับร่างเดิมที่ดาวน์โหลดเก็บไว้ได้');
-  notice.append(message);
-  function action(label,callback,id){
-    const button=document.createElement('button');
-    button.type='button';
-    button.textContent=label;
-    button.onclick=callback;
-    if(id)button.id=id;
-    notice.append(button);
-  }
-  if(state.raw)action('ดาวน์โหลดข้อความใบเสร็จ',downloadReceiptText);
-  if(hasReceiptWork()&&(targetError||draftStorageFailed||draftBlocked)){
-    action('ดาวน์โหลดฉบับร่างใบเสร็จ',downloadReceiptWork,'download-receipt-evidence');
-  }
-  if(oldDraftEvidence!==null)action('ดาวน์โหลดฉบับร่างเดิม',()=>downloadReceiptData(oldDraftEvidence,'หารจ่ายแฟร์ๆ-unmatched-draft-evidence.json','application/json'));
-  const back=document.createElement('a'),url=new URL(returnUrl());
-  back.href=url.href;
-  back.textContent=targetMissing||!billId?'เลือกบิลที่บันทึกไว้':'กลับไปยังบิล';
-  back.onclick=event=>{event.preventDefault();returnToBill(url.href);};
-  notice.append(back);
-  document.getElementById('app').prepend(notice);
+  recovery.update(targetError||draftStorageFailed||draftNotice?`${billId}:${targetError}:${draftNotice}:${draftStorageFailed}`:'','ยังไม่ได้บันทึก');
 }
 function startNewReceipt(){
   receiptCommitted=false;lastDraft=null;rawDraftEvidence=null;
@@ -451,7 +433,7 @@ async function submitReceipt(){
     const repeated=billSession.current.imports.includes(lastDraft?.id);
     let prepared=buildReviewedDraft(reviewData());
     if(repeated){
-      const confirmed=await openSheet({title:'เพิ่มใบเสร็จเดิมอีกครั้งหรือไม่?',body:'<p>เคยเพิ่มใบเสร็จนี้ลงบิลไปแล้ว หากเพิ่มต่อจะซ้ำเมนูเดิม</p>',destructive:true,
+      const confirmed=await openSheet({title:'เพิ่มใบเสร็จเดิมอีกครั้งหรือไม่?',body:'<p>เคยเพิ่มใบเสร็จนี้ลงบิลไปแล้ว หากเพิ่มต่อจะซ้ำเมนูเดิม</p>',
         actions:[{label:'ยกเลิก',value:false},{label:'เพิ่มอีกครั้ง',className:'sheet-primary',value:true}],fallback:()=>document.getElementById('submitBtn')});
       if(!confirmed)return;
       prepared=copyReceiptForImport(prepared);
@@ -506,12 +488,14 @@ void offerImportedReceipt();
 addEventListener('pagehide',persistDraft);
 addEventListener('beforeunload',event=>{if(!leavingReceipt&&(submitting||draftStorageFailed||(targetError&&hasReceiptWork())||draftBlocked&&hasReceiptWork())){event.preventDefault();event.returnValue='';}});
 async function checkTarget(){
-  if(!billSession||submitting)return;
-  try{const latest=await repository.read(billId);if(!latest){targetMissing=true;targetError='ไม่พบบิลนี้ อาจถูกลบแล้ว';showImportError(targetError);showStorageNotice();}else if(latest.recordRevision!==baseRevision)showImportError('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดก่อนเพิ่มเมนู');}
+  if(submitting)return;
+  if(!repository){try{repository=await openBillRepository();if(billId)billSession=createBillSession({repository,billId,sessionStorage:tabStorage});}catch(error){targetError=error.message;showStorageNotice();return;}}
+  if(!billSession)return;
+  try{const latest=await repository.read(billId);if(!latest){targetMissing=true;targetError='ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์';showImportError(targetError);showStorageNotice();}else{targetMissing=false;targetError='';showStorageNotice();if(latest.recordRevision!==baseRevision)showImportError('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดก่อนเพิ่มเมนู');}}
   catch(error){targetError=error.message;showImportError(targetError);showStorageNotice();}
 }
 addEventListener('pageshow',checkTarget);
-addEventListener('fairshare-storage-versionchange',()=>{targetError='โหลดหารจ่ายแฟร์ๆ ใหม่ก่อนบันทึกต่อ';showImportError(targetError);showStorageNotice();});
+addEventListener('fairshare-storage-versionchange',()=>{void checkTarget();});
 addEventListener('focus',checkTarget);
 try{
   const channel=new BroadcastChannel('fairshare-library');

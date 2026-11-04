@@ -13,7 +13,6 @@ button.vision-upload-area:focus-visible{outline:2px solid var(--gold);outline-of
 #ocr-prog-ov .ocr-prog-box{padding-bottom:24px}#ocr-cancel{display:block;margin:24px auto 0;box-shadow:none;outline:none}#ocr-cancel:focus,#ocr-cancel:active{box-shadow:none}#ocr-cancel:focus-visible{outline:1px solid var(--gold2);outline-offset:3px}#ocr-prog-note{margin:0 0 12px}
 #ocr-title:focus{outline:none}
 
-.receipt-target-notice{padding:12px 20px;background:#2A2520;color:#F0EAE0;overflow-wrap:anywhere}.receipt-target-notice button,.receipt-target-notice a{display:inline-block;min-height:44px;padding:10px;color:#ECA46C;background:#211D17;border:1px solid #463F36;border-radius:8px;font:inherit;margin-right:8px}
 
 .top-title:focus{outline:none}
 .top-title,button{-webkit-tap-highlight-color:transparent}

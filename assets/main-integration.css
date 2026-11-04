@@ -73,9 +73,6 @@
 #old-work{align-self:flex-start;margin:8px 16px 0;min-height:44px}
 #old-work[hidden]{display:none}
 .bill-exception .btn{margin:6px;min-height:44px}
-#save-problem{margin:8px 16px;padding:12px;background:var(--card);border:1px solid var(--rs);border-radius:8px;overflow-wrap:anywhere}
-#save-problem[hidden]{display:none}
-#save-problem button{min-height:44px;background:var(--s);color:var(--t);border:1px solid var(--b);border-radius:8px;padding:8px;font:inherit;cursor:pointer}
 button.scard-hdr{width:100%;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
 button.scard-hdr:focus-visible{outline:2px solid var(--a);outline-offset:-3px}
 .person-card-footer{padding:10px 14px;border-top:1px solid var(--b)}

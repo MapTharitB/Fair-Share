@@ -9,7 +9,7 @@ import {createBillControls,createBillNameEditor} from './bill-controls.mjs';
 import {readBillEvidence,DEVELOPMENT_WORK_KEYS} from './bill-evidence.mjs';
 import {openPersonMenus} from './person-menu-dialog.mjs';
 import {clearPeople,clearDishes,setPersonMenus} from './bill-operations.mjs';
-import {openSheet,sheetOpen,customName,setSheetText,confirmDiscard} from './in-app-confirm.mjs';
+import {createRecoveryNotice,openSheet,sheetOpen,customName,setSheetText,confirmDiscard} from './in-app-confirm.mjs';
 import {createBillSession,purgeBillWork} from './bill-session.mjs';
 import {createHistory,sameValue} from './history.mjs';
 import {createEditorActions} from './editor-actions.mjs';
@@ -21,7 +21,7 @@ import {emptyBill,newId} from './bill-state.mjs';
 let storedBill=emptyBill(),storageBlocked=false;
 let invalidCandidate=false;
 let repository=null,billSession=null,controls=null,nameEditor=null,pendingSave=null,pendingCandidate=null,actionBusy=false,installGeneration=0,storageError='',saveOutcome=null,missingTarget=null;
-let entryPhase='loading',opening=false,openingTarget=null,pendingBillOperation=null,versionBlocked=false,separateStart=false;
+let entryPhase='loading',opening=false,openingTarget=null,pendingBillOperation=null;
 
 let tabStorage;try{tabStorage=sessionStorage;}catch{}
 
@@ -73,7 +73,7 @@ async function moveHistory(direction){
 }
 function acceptBill(result){
   saveOutcome=result.status;
-  if(!['saved','unchanged'].includes(result.status)){storageError=result.message;updateBillContext();toast('ยังไม่ได้บันทึก: '+result.message);return false;}
+  if(!['saved','unchanged'].includes(result.status)){storageError=result.message;if(result.status==='missing')markMissing(billSession,result.message);else updateBillContext();return false;}
   const completed=pendingCandidate?.peopleEdit;
   if(completed?.kind==='add'&&peopleDraft.add.trim()===completed.name)peopleDraft.add='';
   if(completed?.kind==='rename'&&peopleDraft.rename?.id===completed.id&&peopleDraft.rename.value.trim()===completed.name){peopleDraft.rename=null;editingPid=null;}
@@ -84,6 +84,85 @@ function adoptRefreshed(result){
   if(result.status==='loaded'){storedBill=result.bill;S=approvedState(storedBill);storageError='';invalidateBT();pruneCollapsedPeople();render();updateHistory();}
   else if(result.status==='missing')markMissing(billSession,result.message);
   else{storageError=result.message;updateBillContext();}
+}
+
+const recovery=createRecoveryNotice({getModel:recoveryModel,fallback:()=>document.getElementById('hdr-title')});
+function recoverableBill(){
+  capturePeopleDraft();
+  const ui=structuredClone(S);
+  if(session){
+    if(!session.draft.name.trim())throw Error('รายการที่ยังกรอกไม่ครบ');
+    const index=ui.items.findIndex(item=>item.id===session.draft.id);
+    if(index<0)ui.items.push(structuredClone(session.draft));else ui.items[index]=structuredClone(session.draft);
+  }
+  if(peopleDraft.rename){const person=ui.people.find(p=>p.id===peopleDraft.rename.id);if(person&&peopleDraft.rename.value.trim())person.name=peopleDraft.rename.value.trim();}
+  if(peopleDraft.add.trim()&&!ui.people.some(person=>person.id===pendingCandidate?.peopleEdit?.id))ui.people.push({id:newId(),name:peopleDraft.add.trim()});
+  return approvedBill(ui,storedBill);
+}
+async function selectRecoveryBill(id){
+  if((pendingCandidate||invalidCandidate||session?.isDirty||hasPeopleDraft()||nameEditor?.dirty)&&!await confirmDiscard())return false;
+  return installBill(id).then(installed=>{if(installed)focusBillContext();return installed;});
+}
+async function saveRecoveryCopy(candidate,name){
+  const operation=pendingBillOperation?.kind==='recovery-copy'?pendingBillOperation:newOperation('recovery-copy');
+  pendingBillOperation=operation;
+  const outcome=operation.outcome=await repository.create({...operation,name,bill:candidate});
+  if(outcome.status==='saved'){await finishLibraryOperation(operation,outcome);toast('บันทึกเป็นบิลใหม่แล้ว');}
+  else{storageError=outcome.message;updateBillContext();}
+}
+async function recoveryModel(){
+  const target=billSession,id=openingTarget?.id??target?.billId??missingTarget;
+  let library=null,latest,readable=false;
+  try{
+    if(!repository){repository=await openBillRepository({developmentStorage});mountBillControls();}
+    library=await repository.list();
+    if(id)latest=await repository.read(id);
+    readable=true;
+  }catch{}
+  if(operationUncertain()){
+    await retryOperation();
+    if(!operationUncertain())return null;
+  }
+  if(readable&&target&&pendingCandidate&&saveOutcome==='uncertain'&&latest?.lastMutationId===pendingCandidate.mutationId){
+    const loaded=await target.load();if(loaded.status==='loaded'){acceptBill({...loaded,status:'saved'});return null;}
+  }
+  if(openingTarget){
+    const captured=openingTarget;
+    return {title:'ไม่สามารถเปิดบิลได้',message:'บิลที่เลือกยังเปิดไม่ได้ รายการในหน้านี้ยังอยู่',actions:[
+      {label:'เปิดบิลที่เลือก',id:'reload-bill',run:()=>installBill(captured.id,captured.targetView,{reason:captured.reason})},
+      ...(target?[{label:'ดาวน์โหลดบิลในหน้านี้',id:'export-unsaved',run:exportCandidate}]:[])
+    ]};
+  }
+  const missing=readable&&id&&!latest;
+  let candidate=null,name=(nameEditor?.dirty?document.getElementById('bill-selector-name').value.trim():target?.record?.name)||'บิลที่กู้คืน';
+  try{if(target)candidate=recoverableBill();}catch{}
+  if(!candidate&&!target){
+    const evidence=await readBillEvidence({repository,developmentStorage,sessionStorage:tabStorage,billId:id});
+    const recovered=evidence.sources.find(source=>source.candidate);
+    if(recovered){candidate=recovered.candidate.bill;name=recovered.candidate.name??name;}
+  }
+  const actions=[];
+  const add=(label,id,run)=>actions.push({label,id,run});
+  if(candidate&&library&&!operationUncertain()&&(missing||!target))add('บันทึกเป็นบิลใหม่','recover-copy',()=>saveRecoveryCopy(candidate,name));
+  if(target||candidate)add(candidate?'ดาวน์โหลดบิล':'ดาวน์โหลดรายการที่ยังกรอกไม่ครบ','export-unsaved',()=>{
+    if(candidate)downloadText(encodeBillFile({name,bill:candidate}),billFilename(name));else exportCandidate();
+  });
+  if(library&&!operationUncertain()){
+    if(!target&&latest)add('เปิดบิล','recover-open',()=>installBill(latest.id));
+    if(target&&latest&&latest.recordRevision===target.record.recordRevision&&pendingCandidate&&saveOutcome!=='uncertain'){
+      add('บันทึกอีกครั้ง','retry-save',async()=>{const staged=pendingCandidate;await target.load();storageBlocked=false;if(await commitCandidate(staged.bill,staged)){if(session){teardownItemDetail();session=null;goto(prevView);}else render();}});
+    }else if(target&&latest)add('เปิดบิลล่าสุด','reload-bill',()=>selectRecoveryBill(target.billId));
+    if(library.records.some(record=>record.id!==id))add('เลือกบิลอื่น','recover-select',()=>controls.openSelector());
+    if(!target){add('สร้างบิลใหม่','recover-new',()=>startNew(true));}
+    if(target&&!readable)add('ลองเชื่อมต่ออีกครั้ง','recover-connect',async()=>{await checkExternalBill();void recovery.show();});
+  }else if(operationUncertain())add('ลองตรวจสอบอีกครั้ง','retry-operation',retryOperation);
+  else if(repository?.connectionError!=='VersionError')add('ลองเชื่อมต่ออีกครั้ง','recover-connect',async()=>{
+    if(target)await checkExternalBill();else await initialize();
+    if(storageError)void recovery.show();
+  });
+  const conflict=readable&&target&&latest&&latest.recordRevision!==target.record.recordRevision;
+  return {title:missing?(candidate?'ไม่พบข้อมูลบิลเดิม':'ไม่สามารถเปิดบิลได้'):conflict?'บิลมีการเปลี่ยนแปลง':target?'ไม่สามารถบันทึกบิลได้ขณะนี้':'ไม่สามารถเปิดบิลได้',
+    message:missing?(candidate?'บันทึกรายการที่มีอยู่เป็นบิลใหม่เพื่อทำต่อ':'ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์'):conflict?'บิลถูกแก้ไขจากหน้าอื่น ดาวน์โหลดสิ่งที่แก้ไว้ก่อนเปิดบิลล่าสุด':operationUncertain()?'ยังยืนยันการบันทึกไม่ได้ รายการที่มีอยู่ยังแสดงในหน้านี้':candidate?'ดาวน์โหลดบิลเพื่อบันทึกรายการที่มีอยู่ก่อนปิดหน้านี้':'ไม่สามารถเข้าถึงข้อมูลบิลได้ขณะนี้',actions};
 }
 
 // ─── 1. ICON CONSTANTS ────────────────────────────────────────────────────────
@@ -183,7 +262,7 @@ async function commitCandidate(candidate,options={}){
   finally{pendingSave=null;setSaving(false);updateBillContext();updateHistory();}
 }
 async function saveS(options={}){
-  if(storageBlocked||!billSession){toast('ยังเปิดบิลนี้เพื่อบันทึกไม่ได้ ตรวจสอบข้อมูลเดิมก่อน');return false;}
+  if(storageBlocked||!billSession){void recovery.show();return false;}
   try{return await commitCandidate(approvedBill(S,storedBill),options);}
   catch(error){invalidCandidate=true;storageError=error.message;updateBillContext();toast('ยังไม่ได้บันทึก: '+error.message);return false;}
 }
@@ -208,8 +287,8 @@ function billControlContext(){
   const cleared=record&&clearDishes(record.bill);
   const canClearDishes=cleared&&(!sameValue(cleared.items,record.bill.items)||!sameValue(cleared.groups,record.bill.groups));
   return {
-    available:!!repository&&!versionBlocked&&!opening&&(!pendingSave||distributionSaving),
-    mutationBlocked:operationUncertain()||!!pendingCandidate||invalidCandidate||versionBlocked,
+    available:!!repository&&!opening&&(!pendingSave||distributionSaving),
+    mutationBlocked:operationUncertain()||!!pendingCandidate||invalidCandidate,
     record,canClearDishes,canClearPeople:!!record?.bill.people.length
   };
 }
@@ -217,18 +296,9 @@ function updateBillContext(){
   const row=document.getElementById('bill-context');
   if(!row)return;
   row.hidden=view==='people'||view==='item-detail';
-  const draft=!!document.querySelector('#app .screen.active [data-unsaved]')||!!session?.isDirty||!!session?.isNew||!!editingPid||!!document.activeElement?.matches('#screen-item-detail input,#screen-people input,#np-inp:not(:placeholder-shown),#adj-svc,#adj-tax,#adj-disc');
-  const problem=operationUncertain()?pendingBillOperation.outcome.message:storageError;
-  document.getElementById('save-problem').hidden=!(billSession&&problem)&&!operationUncertain()&&!openingTarget;
-  document.getElementById('save-error-message').textContent=problem||openingTarget?.message||'';
-  document.getElementById('retry-save').hidden=!pendingCandidate||storageBlocked||['conflict','missing','uncertain'].includes(saveOutcome);
-  document.getElementById('export-unsaved').hidden=!billSession||(!pendingCandidate&&!invalidCandidate&&!draft&&!hasPeopleDraft());
-  document.getElementById('reload-bill').hidden=!openingTarget&&(!billSession||!storageError||operationUncertain());
-  document.getElementById('reload-bill').textContent=openingTarget?'ลองเปิดบิลอีกครั้ง':'เปิดบิลล่าสุด';
-  document.getElementById('retry-operation').hidden=!operationUncertain();
-  document.getElementById('export-evidence').hidden=!billSession||!storageError;
-  document.getElementById('separate-bill').hidden=!separateStart||!billSession||operationUncertain();
-  document.getElementById('main').inert=opening||!!billSession&&operationUncertain();
+  const problem=operationUncertain()?pendingBillOperation.outcome.message:storageError||openingTarget?.message;
+  recovery.update(problem?`${billSession?.billId??missingTarget??'startup'}:${operationUncertain()?'uncertain':entryPhase}:${saveOutcome??''}:${problem}`:'',billSession?'ยังไม่ได้บันทึก':'ไม่สามารถเปิดบิลได้');
+  document.getElementById('main').inert=opening||storageBlocked||!!billSession&&operationUncertain();
   document.getElementById('top-tabs').inert=opening;
   controls?.refresh();nameEditor?.refresh();
 }
@@ -270,7 +340,6 @@ async function installBill(id,targetView,{reason='switch'}={}){
     storageBlocked=false;
     storageError='';
     entryPhase='ready';
-    separateStart=false;
     pendingCandidate=null;
     invalidCandidate=false;
     session=null;
@@ -307,9 +376,9 @@ function downloadText(text,filename,type='application/json'){
 function exportCandidate(){
   const name=billSession?.record?.name??'ข้อมูลกู้คืน';
   capturePeopleDraft();
-  if(hasPeopleDraft()){downloadText(JSON.stringify({format:'fairshare-unsaved-recovery',billId:billSession?.billId,bill:pendingCandidate?.bill??storedBill,peopleDraft,itemDraft:session?.draft},null,2),'หารจ่ายแฟร์ๆ-unsaved-recovery.json');return;}
-  try{if(session&&!session.draft.name.trim())throw Error('ยังไม่มีชื่อเมนู');const candidate=pendingCandidate?.bill??(session?approvedBill({...S,items:[...S.items.filter(it=>it.id!==session.draft.id),session.draft]},storedBill):storedBill);downloadText(encodeBillFile({name,bill:candidate}),billFilename(name));}
-  catch{downloadText(JSON.stringify({format:'fairshare-unsaved-recovery',billId:billSession?.billId,itemDraft:session?.draft,ui:S},null,2),'หารจ่ายแฟร์ๆ-unsaved-recovery.json');}
+
+  try{downloadText(encodeBillFile({name,bill:recoverableBill()}),billFilename(name));}
+  catch{downloadText(JSON.stringify({format:'fairshare-unsaved-recovery',fields:[...document.querySelectorAll('#app input')].filter(input=>input.getClientRects().length).map(input=>({id:input.id,value:input.value})),billId:billSession?.billId,peopleDraft,itemDraft:session?.draft,ui:S},null,2),'หารจ่ายแฟร์ๆ-unsaved-recovery.json');}
 }
 const getWarns=item=>getItemWarnings(item,S.people);
 const getSplitLbl=item=>getSplitLabel(item,S.people);
@@ -505,7 +574,7 @@ async function doneAction(){
 }
 
 function modal(title,body,actions){
-  return openSheet({title,body:'<p></p>',destructive:actions.some(action=>action.className==='sheet-danger'),fallback:()=>document.getElementById('bill-selector'),mount:host=>setSheetText(host.body.querySelector('p'),body),actions});
+  return openSheet({title,body:'<p></p>',fallback:()=>document.getElementById('bill-selector'),mount:host=>setSheetText(host.body.querySelector('p'),body),actions});
 }
 let tT;
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(tT);tT=setTimeout(()=>t.classList.remove('show'),TOAST_DURATION_MS);}
@@ -824,15 +893,7 @@ function renderBillProblem(){
     bindBillAction(button,callback,{allowPending});
     empty.append(button);
   }
-  if(entryPhase!=='loading'){
-    if(!operationUncertain()&&entryPhase==='unavailable'&&!openingTarget){
-      action('ลองอีกครั้ง','retry-open',()=>versionBlocked?location.reload():initialize());
-    }
-    if(separateStart&&repository&&!versionBlocked&&!operationUncertain()){
-      action('สร้างบิลใหม่แยกไว้','start-separate',()=>startNew(true));
-    }
-    action('ตรวจสอบข้อมูลเดิม','bill-evidence',()=>inspectEvidence(missingTarget),true);
-  }
+  if(entryPhase!=='loading')action('ดูตัวเลือก','bill-recovery',()=>recovery.show(),true);
   el.replaceChildren(empty);
 }
 function render(){
@@ -996,7 +1057,6 @@ async function startNew(allowSeparate=false){
   finally{setOpening(false);}
   if(outcome.status==='saved'){await finishLibraryOperation(operation,outcome);return;}
   if(outcome.status==='attention'){
-    separateStart=true;
     storageError=outcome.message;
     if(!billSession)entryPhase='attention';
   }else if(outcome.status!=='uncertain'){
@@ -1021,7 +1081,6 @@ async function finishLibraryOperation(operation,outcome){
       if(await installBill(outcome.successor.id,nextView,{reason:'deleted'}))focusBillContext();
     }else{
       entryPhase='attention';
-      separateStart=true;
       storageError=outcome.attention;
       goto('menu');
     }
@@ -1078,35 +1137,14 @@ async function retryOperation(){
   }
   await finishLibraryOperation(operation,outcome);
 }
-bindBillAction(document.getElementById('retry-operation'),retryOperation,{allowPending:true});
-bindBillAction(document.getElementById('export-evidence'),()=>inspectEvidence(missingTarget??billSession?.billId),{allowPending:true});
-bindBillAction(document.getElementById('separate-bill'),()=>startNew(true));
-document.getElementById('retry-save').onclick=async()=>{
-  if(!pendingCandidate)return;
-  const capture=pendingCandidate;
-  if(await commitCandidate(capture.bill,capture)){if(view==='item-detail'){teardownItemDetail();session=null;goto(prevView);}else render();}
-};
-document.getElementById('export-unsaved').onclick=exportCandidate;
-bindBillAction(document.getElementById('reload-bill'),async()=>{
-  if(openingTarget){
-    const target=openingTarget;
-    if(await installBill(target.id,target.targetView,{reason:target.reason}))focusBillContext();
-    return;
-  }
-  if(versionBlocked){location.reload();return;}
-  if(!billSession)return;
-  const choice=await modal('เปิดบิลล่าสุดไหม?','ดาวน์โหลดสิ่งที่แก้ไว้ก่อน หากยังต้องการเก็บการแก้ไขในหน้านี้',[{label:'แก้ต่อ',value:false},{label:'เปิดบิลล่าสุด',value:true}]);
-  if(choice)await installBill(billSession.billId);
-},{allowPending:true});
-
 bindBillAction(document.getElementById('old-work'),()=>inspectEvidence(),{allowPending:true});
 async function clearCurrent(kind,target){
   let capture=target;const mutationId=newId();
   const people=kind==='people';
   const title=()=>[`${people?'ลบรายชื่อคนทั้งหมด':'ลบเมนูอาหารทั้งหมด'}ในบิล `,customName(capture.name),' ใช่ไหม?'];
   const body=()=>people?`รายชื่อ ${capture.bill.people.length} คนและการเลือกคนในทุกเมนูจะถูกลบ เมนู ราคา และค่าปรับยอดยังอยู่ (ย้อนกลับได้)`:capture.bill.items.length?`เมนู ${capture.bill.items.length} รายการและข้อมูลการหารจ่ายจะถูกลบ พร้อมรีเซ็ต Service Charge, VAT และส่วนลด ชื่อบิลและรายชื่อคนยังอยู่ (ย้อนกลับได้)`:'ยังไม่มีเมนู จะรีเซ็ต Service Charge, VAT ส่วนลด และข้อมูลยอดใบเสร็จเดิม โดยเก็บชื่อบิลและรายชื่อคนไว้ (ย้อนกลับได้)';
-  const result=await openSheet({title:title(),body:'<p></p>',destructive:true,mount:host=>{host.body.querySelector('p').textContent=body();},actions:[{label:'ยกเลิก',value:false},{label:people?'ลบรายชื่อทั้งหมด':capture.bill.items.length?'ลบเมนูทั้งหมด':'รีเซ็ตค่าปรับยอด',className:'sheet-danger',run:async host=>{
-    const latest=await repository.read(capture.id);if(!latest)throw Error('ไม่พบบิลนี้ อาจถูกลบแล้ว');
+  const result=await openSheet({title:title(),body:'<p></p>',mount:host=>{host.body.querySelector('p').textContent=body();},actions:[{label:'ยกเลิก',value:false},{label:people?'ลบรายชื่อทั้งหมด':capture.bill.items.length?'ลบเมนูทั้งหมด':'รีเซ็ตค่าปรับยอด',className:'sheet-danger',run:async host=>{
+    const latest=await repository.read(capture.id);if(!latest)throw Error('ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์');
     if(latest.recordRevision!==capture.recordRevision){capture=latest;adoptRefreshed(await billSession.load());host.setTitle(title());host.body.querySelector('p').textContent=body();throw Error('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดแล้วกดยืนยันอีกครั้ง');}
     const candidate=(people?clearPeople:clearDishes)(capture.bill);const outcome=await billSession.commit(candidate,{baseRevision:capture.recordRevision,kind:'clear-'+kind,mutationId});
     if(!acceptBill(outcome))throw Error(outcome.message);return true;
@@ -1118,14 +1156,10 @@ function markMissing(target,message){
   saveOutcome='missing';
   missingTarget=target.billId;
   entryPhase='missing';
-  if(!session&&!pendingCandidate&&!invalidCandidate&&!hasPeopleDraft()&&!document.querySelector('#app .screen.active [data-unsaved]')){
-    mainScroll.leave();
-    billSession=null;
-    goto('menu');
-  }else updateBillContext();
+  updateBillContext();
 }
 async function checkExternalBill(){
-  if(!repository||!billSession||versionBlocked)return;
+  if(!repository||!billSession)return;
   if(pendingSave||actionBusy||opening||nameEditor?.busy){externalCheckQueued=true;return;}
   externalCheckQueued=false;
   const target=billSession;
@@ -1133,8 +1167,8 @@ async function checkExternalBill(){
     const latest=await repository.read(target.billId);
     if(target!==billSession)return;
     if(pendingSave||actionBusy||opening||nameEditor?.busy){externalCheckQueued=true;return;}
-    if(!latest){markMissing(target,'ไม่พบบิลนี้ อาจถูกลบแล้ว');updateHistory();return;}
-    if(latest.recordRevision===target.record.recordRevision)return;
+    if(!latest){markMissing(target,'ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์');updateHistory();return;}
+    if(latest.recordRevision===target.record.recordRevision){if(storageError&&!pendingCandidate&&!invalidCandidate){storageError='';storageBlocked=false;updateBillContext();}return;}
     if(session||hasPeopleDraft()||nameEditor?.dirty||document.activeElement?.matches('input')||sheetOpen()||pendingCandidate||invalidCandidate){
       storageError='บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดก่อนบันทึก';
       saveOutcome='conflict';
@@ -1144,7 +1178,7 @@ async function checkExternalBill(){
     setOpening(true);
     try{
       const result=await target.load();
-      if(target!==billSession||versionBlocked)return;
+      if(target!==billSession)return;
       adoptRefreshed(result);
       if(result.message)toast(result.message);
     }finally{
@@ -1156,15 +1190,7 @@ async function checkExternalBill(){
   }
 }
 try{const channel=new BroadcastChannel('fairshare-library');channel.onmessage=()=>checkExternalBill();}catch{}
-addEventListener('fairshare-storage-versionchange',()=>{
-  versionBlocked=true;
-  storageBlocked=true;
-  storageError='โหลดหารจ่ายแฟร์ๆ ใหม่ก่อนบันทึกต่อ';
-  controls?.close();
-  if(!billSession){entryPhase='unavailable';render();}
-  updateBillContext();
-  updateHistory();
-});
+addEventListener('fairshare-storage-versionchange',()=>{void checkExternalBill();});
 addEventListener('focus',checkExternalBill);
 addEventListener('pageshow',checkExternalBill);
 addEventListener('pagehide',()=>controls?.close());
@@ -1183,14 +1209,14 @@ document.addEventListener('focusout',()=>queueMicrotask(updateBillContext));
 const requestedView=()=>new URL(location.href).searchParams.get('view')==='summary'?'summary':'menu';
 function mountBillControls(){
   controls?.dispose();nameEditor?.dispose();
-  nameEditor=createBillNameEditor({input:document.getElementById('bill-selector-name'),feedback:document.getElementById('bill-name-feedback'),repository,getContext:billControlContext,onStateChange:state=>{document.getElementById('main').inert=opening||!!billSession&&operationUncertain()||state.busy||state.problem;document.getElementById('top-tabs').inert=opening||state.problem;},onSaved:async record=>{
+  nameEditor=createBillNameEditor({input:document.getElementById('bill-selector-name'),feedback:document.getElementById('bill-name-feedback'),repository,getContext:billControlContext,onStateChange:state=>{document.getElementById('main').inert=opening||storageBlocked||!!billSession&&operationUncertain()||state.busy||state.problem;document.getElementById('top-tabs').inert=opening||state.problem;},onSaved:async record=>{
     const target=billSession;if(record.id!==target?.billId)return;
     const result=await target.load();if(result.status!=='loaded')throw Error(result.message||'เปิดข้อมูลล่าสุดไม่ได้ ลองอีกครั้ง');
     if(target===billSession)adoptRefreshed(result);
   }});
   controls=createBillControls({
     repository,selector,actionsButton,getContext:billControlContext,bindAction:(node,action,options)=>bindBillAction(node,action,{...options,allowPending:true}),
-    onSelect:id=>pendingCandidate||invalidCandidate?toast('ยังไม่ได้บันทึก ลองอีกครั้งหรือดาวน์โหลดสิ่งที่แก้ไว้ก่อน'):installBill(id).then(installed=>{if(installed)focusBillContext();return installed;}),
+    onSelect:id=>selectRecoveryBill(id),
     onAction:dispatchBillAction,onInspect:inspectEvidence,onRequestImport:requestImport,
     onDownload:({text,filename,type})=>downloadText(text,filename,type),onError:toast
   });
@@ -1200,7 +1226,6 @@ async function initialize(){
   try{
     repository?.close();
     repository=null;
-    versionBlocked=false;
     entryPhase='loading';
     storageError='';
     render();
@@ -1218,7 +1243,6 @@ async function initialize(){
       if(['saved','selected'].includes(outcome.status))await finishLibraryOperation(operation,outcome);
       else{
         entryPhase=outcome.status==='attention'?'attention':'unavailable';
-        separateStart=outcome.status==='attention';
         storageError=outcome.message;
         storageBlocked=true;
         goto('menu');

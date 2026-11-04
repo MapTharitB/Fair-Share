@@ -287,7 +287,7 @@ export function createBillControls({repository,selector,actionsButton,getContext
       host.body.replaceChildren(document.createTextNode('บิลนี้ รวมถึงรายชื่อ '+captured.bill.people.length+' คน เมนู '+captured.bill.items.length+' รายการ และข้อมูลการหารจ่ายจะถูกลบ บิลอื่นและไฟล์ที่ดาวน์โหลดไว้จะยังอยู่'));
       const warning=element('span','(ไม่สามารถย้อนกลับได้)');warning.className='sheet-irreversible';host.heading.append(warning);
     }
-    return openSheet({title:title(),destructive:true,fallback,mount:explain,
+    return openSheet({title:title(),fallback,mount:explain,
       actions:[cancel,{label:'ลบบิลนี้',className:'sheet-danger',run:async host=>{
         const outcome=operation.outcome?.status==='uncertain'?await repository.reconcileOperation(operation)
           :await repository.removeAndSelect({...operation,expectedRevision:captured.recordRevision});
@@ -346,7 +346,7 @@ export function createBillControls({repository,selector,actionsButton,getContext
         try{
           const next=await repository.read(target.id);
           if(signal.aborted||token!==generation)return;
-          if(!next)throw Error('ไม่พบบิลนี้ อาจถูกลบแล้ว');
+          if(!next)throw Error('ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์');
           if(refresh){snapshot=next;show(next);}
           refreshButton.hidden=next.recordRevision===snapshot.recordRevision;
           notice.textContent=refreshButton.hidden?'':'บิลนี้มีการเปลี่ยนแปลง เปิดข้อมูลล่าสุดเพื่อดูรายละเอียดใหม่';

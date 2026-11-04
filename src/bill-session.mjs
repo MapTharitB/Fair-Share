@@ -17,7 +17,7 @@ export function createBillSession({repository,billId,sessionStorage}){
   async function load(){
     try{
       const next=await repository.read(billId);blocked=false;
-      if(!next){blocked=true;return result('missing','ไม่พบบิลนี้ อาจถูกลบแล้ว');}
+      if(!next){blocked=true;return result('missing','ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์');}
       const old=record,oldHistory=history;record=next;history=createHistory(content(next.bill));let restored=false;
       if(oldHistory&&old.bill.revision===next.bill.revision&&sameValue(content(old.bill),content(next.bill))){history=oldHistory;restored=true;}
       try{
@@ -34,7 +34,7 @@ export function createBillSession({repository,billId,sessionStorage}){
   }
   async function assertCurrent(){
     const latest=await repository.read(billId);
-    if(!latest){blocked=true;throw Error('ไม่พบบิลนี้ อาจถูกลบแล้ว');}
+    if(!latest){blocked=true;throw Error('ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์');}
     if(!record||latest.recordRevision!==record.recordRevision){blocked=true;throw Error('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดแล้วลองอีกครั้ง');}return clone(latest);
   }
   async function commit(candidate,{baseRevision=record?.recordRevision,kind='edit',mutationId=newId(),timeline}={}){

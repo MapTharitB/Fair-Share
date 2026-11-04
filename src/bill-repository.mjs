@@ -12,15 +12,15 @@ export function billName(value){
 }
 export function admittedBill(value){const bill=normalizeBillPolicy(value);approvedState(bill);calculate(bill);return bill;}
 const clone=value=>structuredClone(value);
-const missing=()=>({status:'missing',message:'ไม่พบบิลนี้ อาจถูกลบแล้ว'});
-const uncertain=()=>({status:'uncertain',message:'ยังยืนยันผลการบันทึกไม่ได้ เก็บสิ่งที่แก้ไว้แล้วตรวจสอบอีกครั้ง'});
+const missing=()=>({status:'missing',message:'ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์'});
+const uncertain=()=>({status:'uncertain',message:'ยังยืนยันผลการบันทึกไม่ได้ ดาวน์โหลดสิ่งที่แก้ไว้ก่อนปิดหน้านี้'});
 const errorMessage=error=>({
   QuotaExceededError:'พื้นที่บันทึกไม่พอ ดาวน์โหลดสิ่งที่แก้ไว้แล้วลองอีกครั้ง',
   SecurityError:'เปิดข้อมูลในเบราว์เซอร์ไม่ได้ เช็กการอนุญาตให้บันทึกข้อมูลแล้วลองอีกครั้ง',
   NotAllowedError:'เปิดข้อมูลในเบราว์เซอร์ไม่ได้ เช็กการอนุญาตให้บันทึกข้อมูลแล้วลองอีกครั้ง',
   AbortError:'การบันทึกถูกยกเลิก ลองอีกครั้ง',
-  InvalidStateError:'โหลดหารจ่ายแฟร์ๆ ใหม่ก่อนบันทึกต่อ',
-  VersionError:'โหลดหารจ่ายแฟร์ๆ รุ่นล่าสุดก่อนเปิดบิลนี้',
+  InvalidStateError:'ไม่สามารถบันทึกบิลได้ขณะนี้',
+  VersionError:'ไม่สามารถเปิดข้อมูลบิลด้วยแอปรุ่นนี้',
   UnknownError:'เปิดข้อมูลไม่ได้ ลองอีกครั้งหรือดาวน์โหลดข้อมูลเดิมก่อน'
 }[error?.name]||error?.message||'เปิดข้อมูลในเบราว์เซอร์ไม่ได้ ลองอีกครั้ง');
 function checkRecord(record){
@@ -62,23 +62,45 @@ function sourceAttention(storage){
 
 export async function openBillRepository({indexedDB=globalThis.indexedDB,developmentStorage,clock=Date.now}={}){
   if(!indexedDB)throw Error('เบราว์เซอร์นี้เปิดที่บันทึกบิลไม่ได้');
-  const db=await new Promise((resolve,reject)=>{
+  let db,closed=false,connecting=null,channel,connectionError=null;
+  function connect(){
+    if(closed)return Promise.reject(Error('ไม่สามารถบันทึกบิลได้ขณะนี้'));
+    if(connecting)return connecting;
+    connecting=new Promise((resolve,reject)=>{
     const request=indexedDB.open(DATABASE,1);let rejected=false;
+    const timer=setTimeout(()=>{rejected=true;reject(Error('ไม่สามารถเปิดบิลได้ขณะนี้'));},4000);
     request.onupgradeneeded=()=>{const db=request.result;db.createObjectStore('bills',{keyPath:'id'});db.createObjectStore('meta',{keyPath:'key'});};
-    request.onsuccess=()=>{if(rejected)request.result.close();else resolve(request.result);};
-    request.onerror=()=>reject(request.error);
-    request.onblocked=()=>{rejected=true;reject(Error('ปิด หารจ่ายแฟร์ๆ ในแท็บอื่นแล้วลองอีกครั้ง'));};
-  }).catch(error=>{throw Error(errorMessage(error));});
-
-  let closed=false,channel;
+    request.onsuccess=()=>{clearTimeout(timer);if(rejected||closed){request.result.close();reject(Error('ไม่สามารถบันทึกบิลได้ขณะนี้'));}else{
+      db=request.result;connectionError=null;
+      const connection=db;
+      const disconnect=()=>{connection.close();if(db===connection)db=null;};
+      connection.onclose=()=>{if(db===connection)db=null;};
+      connection.onversionchange=()=>{disconnect();if(globalThis.window)window.dispatchEvent(new Event('fairshare-storage-versionchange'));};
+      resolve(db);
+    }};
+    request.onerror=()=>{clearTimeout(timer);reject(request.error);};
+    request.onblocked=()=>{clearTimeout(timer);rejected=true;reject(Error('ไม่สามารถเปิดบิลได้ขณะนี้'));};
+    }).catch(error=>{connectionError=error.name;throw Object.assign(Error(errorMessage(error)),{code:error.name});}).finally(()=>{connecting=null;});
+    return connecting;
+  }
+  await connect();
   try{if(globalThis.window&&globalThis.BroadcastChannel)channel=new BroadcastChannel('fairshare-library');}catch{}
-  function close(){closed=true;db.close();channel?.close();}
-  db.onversionchange=()=>{close();if(globalThis.window)window.dispatchEvent(new Event('fairshare-storage-versionchange'));};
+  function close(){closed=true;db?.close();db=null;channel?.close();}
 
-  function transaction(stores,mode,work){
+  async function transaction(stores,mode,work){
+    let prepared;
+    try{
+      if(closed)throw Error('ไม่สามารถบันทึกบิลได้ขณะนี้');
+      const connection=db??await connect();
+      try{prepared=connection.transaction(stores,mode);}
+      catch(error){
+        if(error.name!=='InvalidStateError')throw error;
+        connection.close();if(db===connection)db=null;
+        prepared=(await connect()).transaction(stores,mode);
+      }
+    }catch(error){throw Object.assign(Error(errorMessage(error)),{known:true});}
     return new Promise((resolve,reject)=>{
       const fail=(error,known)=>reject(Object.assign(Error(errorMessage(error)),{known}));
-      if(closed){fail(Error('โหลดหารจ่ายแฟร์ๆ ใหม่ก่อนบันทึกต่อ'),true);return;}
       let tx,value,failure;
       function abort(error){
         failure=error;
@@ -92,7 +114,7 @@ export async function openBillRepository({indexedDB=globalThis.indexedDB,develop
         };
       }
       try{
-        tx=db.transaction(stores,mode);
+        tx=prepared;
         tx.oncomplete=()=>resolve(value);
         tx.onabort=()=>fail(failure||tx.error||Error('การบันทึกถูกยกเลิก ลองอีกครั้ง'),true);
         work(tx,result=>{value=result;},receive);
@@ -255,6 +277,7 @@ export async function openBillRepository({indexedDB=globalThis.indexedDB,develop
   }
 
   return {
+    get connectionError(){return connectionError;},
     list:()=>transaction(['bills'],'readonly',(tx,set,receive)=>receive(tx.objectStore('bills').getAll(),values=>set(classify(values)))),
     async read(key){const raw=await readRaw(key);return raw?clone(checkRecord(raw)):null;},
     readRaw,readMeta,create:args=>mutate('create',args),write:args=>mutate('write',args),
