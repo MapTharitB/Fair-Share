@@ -50,15 +50,6 @@ function showSheet({title,body='',actions=[],className='',fallback,mount,restore
       if(event.key==='Enter'&&(event.isComposing||event.target.matches('input[type=search]'))){event.preventDefault();return;}
       if(event.key==='Tab'){const nodes=[...dialog.querySelectorAll('button:not(:disabled),input:not(:disabled),a[href],[tabindex="0"]')].filter(n=>n.tabIndex>=0&&n.getClientRects().length&&!n.closest('[hidden]'));if(!nodes.length){event.preventDefault();heading.focus();return;}const first=nodes[0],last=nodes.at(-1);if(event.shiftKey&&(document.activeElement===first||document.activeElement===heading)){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}}
     });
-    // A sheet can appear beneath a stationary cursor. Hover feedback starts
-    // when a mouse or hovering pen actually moves within this sheet.
-    dialog.addEventListener('pointermove',event=>{
-      dialog.classList.toggle('sheet-hover',event.pointerType==='mouse'||(event.pointerType==='pen'&&!event.buttons));
-    });
-    dialog.addEventListener('pointerdown',event=>{
-      if(event.pointerType!=='mouse')dialog.classList.remove('sheet-hover');
-    });
-    dialog.addEventListener('pointerleave',()=>dialog.classList.remove('sheet-hover'));
     dialog.showModal();
     dispose=mount?.(host)||(()=>{});
     // A custom header can reparent the heading and lose native dialog focus.
@@ -72,11 +63,13 @@ export async function confirmDiscard({fallback,parent=null}={}){
   },parent);
   return result===true;
 }
-export function confirmAction(message,{confirmLabel='ยืนยัน',title='เช็กก่อนเปลี่ยนบิล'}={}){return openSheet({title,body:'<p></p>',mount:host=>{host.body.querySelector('p').textContent=message;},actions:[{label:'ยกเลิก',value:false},{label:confirmLabel,value:true,className:'sheet-danger'}]});}
 
 
 // Controllers own data and recovery; this component only presents one episode.
 export function createRecoveryNotice({getModel, fallback}){
+  const lifetime=new AbortController(),signal=lifetime.signal;
+  const timers=new Set();let frame=0;
+  const scheduleShow=()=>{const timer=setTimeout(()=>{timers.delete(timer);void show();},0);timers.add(timer);};
   const button=document.createElement('button');
   button.type='button';button.className='recovery-status';button.hidden=true;
   button.setAttribute('aria-haspopup','dialog');document.body.append(button);
@@ -87,7 +80,7 @@ export function createRecoveryNotice({getModel, fallback}){
     if(bar!==observedBar){observer.disconnect();observedBar=bar;if(bar)observer.observe(bar);}
     button.style.bottom=bar?Math.max(12,innerHeight-bar.getBoundingClientRect().top+12)+'px':'';
   }
-  window.addEventListener('resize',place);
+  window.addEventListener('resize',place,{signal});
 
   async function show(force=false){
     if(!key||loading||sheetOpen()||(!force&&shown===key))return;
@@ -95,11 +88,16 @@ export function createRecoveryNotice({getModel, fallback}){
     let model;
     try{model=await getModel();}catch{model={title:'ไม่สามารถเปิดบิลได้',message:'ไม่สามารถเข้าถึงข้อมูลบิลได้ขณะนี้',actions:[]};}
     finally{loading=false;}
-    if(token!==generation||!key||sheetOpen()||!model)return;
+    if(token!==generation){
+      // The new episode's scheduled show may have run while this read was pending.
+      if(key)void show();
+      return;
+    }
+    if(!key||sheetOpen()||!model)return;
     shown=episode;
     const choice=await openSheet({title:model.title,body:'<p></p>',className:'recovery-sheet',fallback,
       mount:current=>{host=current;current.body.firstChild.textContent=model.message;return ()=>{host=null;};},
-      actions:[...model.actions.map((action,index)=>({label:action.label,id:action.id,value:action,className:index===0?'sheet-primary':''})),{label:'ปิด',value:null}]});
+      actions:[...model.actions.map((action,index)=>({label:action.label,id:action.id,value:action,className:index===0?'sheet-primary':''})),{label:model.dismissLabel??'ปิด',value:null}]});
     if(choice&&token===generation){
       try{await choice.run();}catch{update(key,'ยังไม่ได้บันทึก');}
     }
@@ -107,10 +105,10 @@ export function createRecoveryNotice({getModel, fallback}){
   function update(next,label='ยังไม่ได้บันทึก'){
     next=next||'';
     if(next!==key){generation++;key=next;host?.finish(null);if(!next)shown='';}
-    button.hidden=!key;button.textContent=label;if(key)requestAnimationFrame(place);
-    if(key)setTimeout(()=>void show(),0);
+    button.hidden=!key;button.textContent=label;if(key){cancelAnimationFrame(frame);frame=requestAnimationFrame(place);}
+    if(key)scheduleShow();
   }
   button.onclick=()=>void show(true);
-  document.addEventListener('close',()=>{if(key)setTimeout(()=>void show(),0);},true);
-  return {update,show:()=>show(true)};
+  document.addEventListener('close',()=>{if(key)scheduleShow();},{capture:true,signal});
+  return {update,show:()=>show(true),dispose(){generation++;key='';shown='';lifetime.abort();observer.disconnect();cancelAnimationFrame(frame);for(const timer of timers)clearTimeout(timer);timers.clear();host?.finish(null);button.remove();}};
 }

@@ -4,7 +4,7 @@ export function esc(s) {
 const round = (value, digits) => Math.round(value * 10 ** digits) / 10 ** digits;
 const r4 = value => round(value, 4);
 export const getItemTotal = item => item.authoritativeTotalCents != null ? item.authoritativeTotalCents / 100 : r4((parseFloat(item.price) || 0) * Math.max(parseInt(item.quantity) || 1, 1));
-export const formatNumber = (v, trim = false) => {
+const formatNumber = (v, trim = false) => {
   const a = Math.abs(v),
     pts = a.toFixed(2).split('.');
   const dec = trim ? pts[1].replace(/0+$/, '') : pts[1];
@@ -19,3 +19,5 @@ export const fmtComma = v => {
 };
 export const displayRate = v => String(Math.round((v || 0) * 100) / 100);
 export const fP = v => (typeof v === 'number' ? v : 0).toFixed(2) + '%';
+
+export {MAIN_ICONS} from './ui-icons.mjs';

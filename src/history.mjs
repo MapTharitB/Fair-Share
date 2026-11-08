@@ -16,7 +16,9 @@ export function createHistory(initial,{limit=20,equal=sameValue,serialized}={}){
   return {
     get current(){return clone(states[cursor]);},
     get canUndo(){return cursor>0;},get canRedo(){return cursor<states.length-1;},
-    record(next){if(equal(states[cursor],next))return false;states=states.slice(0,cursor+1);states.push(clone(next));if(states.length>limit+1)states.shift();cursor=states.length-1;return true;},
+    // Unrecorded options belong to this slot; older states and redo stay intact.
+    replaceCurrent(next){states[cursor]=clone(next);},
+    record(next,{force=false}={}){if(!force&&equal(states[cursor],next))return false;states=states.slice(0,cursor+1);states.push(clone(next));if(states.length>limit+1)states.shift();cursor=states.length-1;return true;},
     undo(){if(cursor>0)cursor--;return clone(states[cursor]);},
     redo(){if(cursor<states.length-1)cursor++;return clone(states[cursor]);},
     reset(next){states=[clone(next)];cursor=0;},

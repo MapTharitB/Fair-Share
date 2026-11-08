@@ -1,3 +1,4 @@
+import { readUiTheme } from './ui-theme.mjs';
 import { approvedState, approvedBillTotals, approvedShares } from './approved-ui-bridge.mjs';
 import { fmt, displayRate } from './bill-display.mjs';
 import { getPersonWarning } from './bill-warnings.mjs';
@@ -12,6 +13,8 @@ export async function downloadSummaryImage(capture, toast) {
     return;
   }
   await document.fonts.ready;
+  const {colors, fonts} = readUiTheme();
+  const billTitleFont = `600 18px ${fonts.body.replace(/,\s*sans-serif$/, "")}`;
   const DPR = Math.min(window.devicePixelRatio || 2, 3);
   const CW = 800,
     PAD = 32,
@@ -24,7 +27,7 @@ export async function downloadSummaryImage(capture, toast) {
     SLH = 36;
   const titleCanvas = document.createElement('canvas'),
     titleCtx = titleCanvas.getContext('2d');
-  titleCtx.font = '600 18px Sarabun';
+  titleCtx.font = billTitleFont;
   const titleLines = [];
   let titleLine = '';
   for (const character of capture.name) {
@@ -37,19 +40,6 @@ export async function downloadSummaryImage(capture, toast) {
   titleLines.push(titleLine);
   const HDR_H = 90 + titleLines.length * 28;
   const INNER = CW - PAD * 2;
-  const CC = {
-    bg: '#18150F',
-    surf: '#211D17',
-    card: '#2A2520',
-    acc: '#C87D3E',
-    text: '#F0EAE0',
-    mut: '#87807A',
-    dim: '#524D47',
-    bdr: '#38332C',
-    ok: '#5FAA78',
-    red: '#D45050',
-    accBg: 'rgba(200,125,62,0.07)'
-  };
   function personCardHeight(p) {
     const items = state.items.filter(it => it.assignments.some(a => a.personId === p.id));
     let h = CP * 2 + 44;
@@ -95,7 +85,7 @@ export async function downloadSummaryImage(capture, toast) {
     ctx.closePath();
   }
   function drawLine(yy, x1 = PAD + CP, x2 = CW - PAD - CP) {
-    ctx.strokeStyle = CC.bdr;
+    ctx.strokeStyle = colors.border;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(x1, yy);
@@ -116,20 +106,20 @@ export async function downloadSummaryImage(capture, toast) {
     return s + '…';
   }
   function drawBillRow(lbl, val, y, vc, fontSize, yOff) {
-    drawText(lbl, PAD + CP, y + LH - yOff, `400 ${fontSize} "Sarabun",sans-serif`, CC.mut);
-    drawText(val, CW - PAD - CP, y + LH - yOff, `500 ${fontSize} "Sarabun",sans-serif`, vc, 'right');
+    drawText(lbl, PAD + CP, y + LH - yOff, `400 ${fontSize} ${fonts.body}`, colors.muted);
+    drawText(val, CW - PAD - CP, y + LH - yOff, `500 ${fontSize} ${fonts.body}`, vc, 'right');
     return y + LH;
   }
-  ctx.fillStyle = CC.bg;
+  ctx.fillStyle = colors.background;
   ctx.fillRect(0, 0, CW, TH);
-  ctx.fillStyle = CC.surf;
+  ctx.fillStyle = colors.surface;
   ctx.fillRect(0, 0, CW, HDR_H);
   drawLine(HDR_H, 0, CW);
-  ctx.font = '400 18px "Prompt",sans-serif';
-  ctx.fillStyle = CC.mut;
+  ctx.font = `400 18px ${fonts.heading}`;
+  ctx.fillStyle = colors.muted;
   ctx.fillText('หารจ่าย', PAD, 56);
   const preW = ctx.measureText('หารจ่าย').width;
-  drawText('แฟร์ๆ', PAD + preW + 5, 60, '800 36px "Kanit",sans-serif', CC.acc);
+  drawText('แฟร์ๆ', PAD + preW + 5, 60, `800 36px ${fonts.brand}`, colors.emphasis);
   const now = new Date();
   const dStr = now.toLocaleDateString('th-TH', {
     year: 'numeric',
@@ -139,10 +129,10 @@ export async function downloadSummaryImage(capture, toast) {
     hour: '2-digit',
     minute: '2-digit'
   });
-  drawText(dStr, CW - PAD, 56, '400 12px "Sarabun",sans-serif', CC.dim, 'right');
-  titleLines.forEach((line, index) => drawText(line, PAD, 96 + index * 28, '600 18px Sarabun', CC.text));
+  drawText(dStr, CW - PAD, 56, `400 12px ${fonts.body}`, colors.subdued, 'right');
+  titleLines.forEach((line, index) => drawText(line, PAD, 96 + index * 28, billTitleFont, colors.text));
   let y = HDR_H + PAD;
-  drawText('ยอดรวมรายคน', PAD, y + 20, '700 11px "Sarabun",sans-serif', CC.dim);
+  drawText('ยอดรวมรายคน', PAD, y + 20, `700 11px ${fonts.body}`, colors.sectionLabel);
   y += SLH;
   state.people.forEach(p => {
     const pt = totals.pt[p.id];
@@ -152,16 +142,16 @@ export async function downloadSummaryImage(capture, toast) {
     const neg = pt.total < 0;
     const hw = hasPersonWarning(p.id);
     drawRoundedRect(PAD, y, INNER, cH, CR);
-    ctx.fillStyle = CC.card;
+    ctx.fillStyle = colors.card;
     ctx.fill();
     drawRoundedRect(PAD, y, INNER, cH, CR);
-    ctx.strokeStyle = CC.bdr;
+    ctx.strokeStyle = colors.border;
     ctx.lineWidth = 1;
     ctx.stroke();
     let cy = y + CP;
     const pNameDisp = truncateText((hw ? '⚠ ' : '') + p.name, INNER - CP * 2 - 180);
-    drawText(pNameDisp, PAD + CP, cy + 28, '700 16px "Sarabun",sans-serif', hw ? CC.red : CC.text);
-    drawText(fmt(pt.total), CW - PAD - CP, cy + 30, '700 20px "Sarabun",sans-serif', neg ? CC.red : CC.acc, 'right');
+    drawText(pNameDisp, PAD + CP, cy + 28, `700 16px ${fonts.body}`, hw ? colors.danger : colors.text);
+    drawText(fmt(pt.total), CW - PAD - CP, cy + 30, `700 20px ${fonts.body}`, neg ? colors.danger : colors.emphasis, 'right');
     cy += 44;
     if (items.length) {
       drawLine(cy);
@@ -171,54 +161,54 @@ export async function downloadSummaryImage(capture, toast) {
           amount: 0
         };
         const nm = truncateText(it.name || 'ไม่มีชื่อเมนู', INNER - CP * 2 - 160);
-        drawText(nm, PAD + CP + 12, cy + 17, '400 13px "Sarabun",sans-serif', CC.text);
-        drawText(fmt(d.amount), CW - PAD - CP, cy + 17, '400 13px "Sarabun",sans-serif', CC.mut, 'right');
+        drawText(nm, PAD + CP + 12, cy + 17, `400 13px ${fonts.body}`, colors.text);
+        drawText(fmt(d.amount), CW - PAD - CP, cy + 17, `400 13px ${fonts.body}`, colors.muted, 'right');
         cy += ILH;
       });
       cy += 12;
       drawLine(cy);
-      cy = drawBillRow('ยอดรวมย่อย', fmt(pt.subtotal), cy, CC.text, '13px', 7);
-      if (state.service.enabled) cy = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(pt.service)}`, cy, CC.text, '13px', 7);
-      if (state.tax.enabled) cy = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(pt.vat)}`, cy, CC.text, '13px', 7);
-      if (totals.D > 0) cy = drawBillRow('ส่วนลด', `−${fmt(pt.discount)}`, cy, CC.ok, '13px', 7);
+      cy = drawBillRow('ยอดรวมย่อย', fmt(pt.subtotal), cy, colors.text, '13px', 7);
+      if (state.service.enabled) cy = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(pt.service)}`, cy, colors.text, '13px', 7);
+      if (state.tax.enabled) cy = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(pt.vat)}`, cy, colors.text, '13px', 7);
+      if (totals.D > 0) cy = drawBillRow('ส่วนลด', `−${fmt(pt.discount)}`, cy, colors.success, '13px', 7);
       cy += 8;
       drawLine(cy);
       drawRoundedRect(PAD, y + cH - (44 + CP), INNER, 44 + CP, [0, 0, CR, CR]);
-      ctx.fillStyle = CC.accBg;
+      ctx.fillStyle = colors.accentWash;
       ctx.fill();
-      drawText('ยอดรวม', PAD + CP, cy + 30, '600 14px "Sarabun",sans-serif', CC.mut);
-      drawText(fmt(pt.total), CW - PAD - CP, cy + 32, '700 20px "Sarabun",sans-serif', neg ? CC.red : CC.acc, 'right');
+      drawText('ยอดรวม', PAD + CP, cy + 30, `600 14px ${fonts.body}`, colors.muted);
+      drawText(fmt(pt.total), CW - PAD - CP, cy + 32, `700 20px ${fonts.body}`, neg ? colors.danger : colors.emphasis, 'right');
     } else {
-      drawText('⚠ ยังไม่ได้เลือกเมนูใด', PAD + CP, cy + 22, '400 13px "Sarabun",sans-serif', CC.red);
+      drawText('⚠ ยังไม่ได้เลือกเมนูใด', PAD + CP, cy + 22, `400 13px ${fonts.body}`, colors.danger);
     }
     y += cH + GAP;
   });
   y += 16;
-  drawText('ยอดรวมบิล', PAD, y + 20, '700 11px "Sarabun",sans-serif', CC.dim);
+  drawText('ยอดรวมบิล', PAD, y + 20, `700 11px ${fonts.body}`, colors.sectionLabel);
   y += SLH;
   const bcH = billCardHeight();
   drawRoundedRect(PAD, y, INNER, bcH, CR);
-  ctx.fillStyle = CC.card;
+  ctx.fillStyle = colors.card;
   ctx.fill();
   drawRoundedRect(PAD, y, INNER, bcH, CR);
-  ctx.strokeStyle = CC.bdr;
+  ctx.strokeStyle = colors.border;
   ctx.lineWidth = 1;
   ctx.stroke();
   let by = y + CP;
-  by = drawBillRow('ยอดรวมย่อย', fmt(totals.Sb), by, CC.text, '14px', 6);
-  if (state.service.enabled) by = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(totals.svcAmt)}`, by, CC.text, '14px', 6);
-  if (state.tax.enabled) by = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(totals.vatAmt)}`, by, CC.text, '14px', 6);
-  if (totals.D > 0) by = drawBillRow('ส่วนลด', `−${fmt(totals.D)}`, by, CC.ok, '14px', 6);
+  by = drawBillRow('ยอดรวมย่อย', fmt(totals.Sb), by, colors.text, '14px', 6);
+  if (state.service.enabled) by = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(totals.svcAmt)}`, by, colors.text, '14px', 6);
+  if (state.tax.enabled) by = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(totals.vatAmt)}`, by, colors.text, '14px', 6);
+  if (totals.D > 0) by = drawBillRow('ส่วนลด', `−${fmt(totals.D)}`, by, colors.success, '14px', 6);
   by += 8;
   drawLine(by);
   drawRoundedRect(PAD, y + bcH - (44 + CP), INNER, 44 + CP, [0, 0, CR, CR]);
-  ctx.fillStyle = CC.accBg;
+  ctx.fillStyle = colors.accentWash;
   ctx.fill();
-  drawText('ยอดที่ต้องจ่าย', PAD + CP, by + 30, '600 14px "Sarabun",sans-serif', CC.mut);
-  drawText(fmt(totals.grand), CW - PAD - CP, by + 34, '700 22px "Sarabun",sans-serif', CC.acc, 'right');
+  drawText('ยอดที่ต้องจ่าย', PAD + CP, by + 30, `600 14px ${fonts.body}`, colors.muted);
+  drawText(fmt(totals.grand), CW - PAD - CP, by + 34, `700 22px ${fonts.body}`, colors.emphasis, 'right');
   y += bcH + PAD;
-  drawText('หารจ่าย แฟร์ๆ', CW / 2, y + 22, '600 13px "Sarabun",sans-serif', CC.dim, 'center');
-  drawText('UX Design by Map Tharit Banchanurat', CW / 2, y + 40, '400 11px "Sarabun",sans-serif', CC.dim, 'center');
+  drawText('หารจ่าย แฟร์ๆ', CW / 2, y + 22, `600 13px ${fonts.body}`, colors.subdued, 'center');
+  drawText('UX Design by Map Tharit Banchanurat', CW / 2, y + 40, `400 11px ${fonts.body}`, colors.subdued, 'center');
   await new Promise(resolve => canvas.toBlob(blob => {
     try {
       if (!blob) {

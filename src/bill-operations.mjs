@@ -35,3 +35,5 @@ export function setPersonMenus(bill,personId,selectedItemIds){
   });
   return {bill:checked(next),changedItemIds,removedLockedItemIds};
 }
+
+export function isProtectedDefault(record,library){return !!record&&record.name==='ร้านอาหาร 1'&&isEmptyBillContent(record.bill)&&library.records.length===1&&!library.damaged.length&&library.records[0].id===record.id;}

@@ -2,15 +2,21 @@
 export function measureChoiceGroup(group,{textFor=face=>face.textContent}={}){
   const context=document.createElement('canvas').getContext('2d');
   const px=value=>parseFloat(value)||0;
+  const groupStyle=getComputedStyle(group);
+  // Reserve room for either choice to become bold without moving the surrounding cards.
+  const weights=['--choice-rest-weight','--choice-selected-weight']
+    .map(token=>groupStyle.getPropertyValue(token).trim()).filter(Boolean);
   const widths=[...group.querySelectorAll('.segmented-face')].map(face=>{
     const style=getComputedStyle(face);
-    context.font=`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
     const text=textFor(face);
-    return context.measureText(text).width+Math.max(0,[...text].length-1)*px(style.letterSpacing)
+    const textWidth=Math.max(...(weights.length?weights:[style.fontWeight]).map(weight=>{
+      context.font=`${weight} ${style.fontSize} ${style.fontFamily}`;
+      return context.measureText(text).width;
+    }));
+    return textWidth+Math.max(0,[...text].length-1)*px(style.letterSpacing)
       +px(style.paddingLeft)+px(style.paddingRight)+px(style.borderLeftWidth)+px(style.borderRightWidth);
   });
-  const style=getComputedStyle(group);
-  return Math.ceil(2*Math.max(...widths)+px(style.columnGap)+px(style.paddingLeft)+px(style.paddingRight)+px(style.borderLeftWidth)+px(style.borderRightWidth));
+  return Math.ceil(2*Math.max(...widths)+px(groupStyle.columnGap)+px(groupStyle.paddingLeft)+px(groupStyle.paddingRight)+px(groupStyle.borderLeftWidth)+px(groupStyle.borderRightWidth));
 }
 
 // Fit the real adjustment controls inside their card padding, including the

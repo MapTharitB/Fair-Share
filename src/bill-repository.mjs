@@ -1,8 +1,9 @@
-import {emptyBill,normalizeBillPolicy,calculate} from './bill-state.mjs';
-import {approvedState} from './approved-ui-bridge.mjs';
+import {isProtectedDefault} from './bill-operations.mjs';
+import {emptyBill} from './bill-state.mjs';
+import {admittedBill} from './bill-admission.mjs';
 import {sameValue} from './history.mjs';
 
-export const DATABASE='fairshare';
+const DATABASE='fairshare';
 export const DEVELOPMENT_BILL_KEYS=['fairshare.v1','fairshare.v1.backup','fairshare.v1.pending','fairshare.v1.damaged'];
 export function billName(value){
   if(typeof value!=='string'||!value.trim())throw Error('กรอกชื่อบิล');
@@ -10,7 +11,6 @@ export function billName(value){
   if(name.length>100)throw Error('ชื่อบิลยาวได้ไม่เกิน 100 ตัวอักษร');
   return name;
 }
-export function admittedBill(value){const bill=normalizeBillPolicy(value);approvedState(bill);calculate(bill);return bill;}
 const clone=value=>structuredClone(value);
 const missing=()=>({status:'missing',message:'ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์'});
 const uncertain=()=>({status:'uncertain',message:'ยังยืนยันผลการบันทึกไม่ได้ ดาวน์โหลดสิ่งที่แก้ไว้ก่อนปิดหน้านี้'});
@@ -250,12 +250,22 @@ export async function openBillRepository({indexedDB=globalThis.indexedDB,develop
           if(!old){set(missing());return;}
           checkRecord(old);
           if(old.recordRevision!==args.expectedRevision){set(conflict(old));return;}
-          store.delete(args.id);
-          receive(store.getAll(),values=>receive(meta.get('initialized'),initialized=>{
+          receive(store.getAll(),all=>receive(meta.get('initialized'),initialized=>{
+            if(args.createReplacement&&args.allowReuse&&isProtectedDefault(old,classify(all))
+              &&old.recordRevision===1&&old.previous===null&&sameValue(old.bill,emptyBill())){
+              set({status:'reused',record:old});
+              return;
+            }
+            const values=all.filter(record=>record.id!==args.id);
             const {records,damaged}=classify(values);
+            if(args.createReplacement){
+              if(all.some(record=>record.id===args.replacementId)){set(collision());return;}
+              if(!automaticName(values,false)){set(attention('มีบิลที่อ่านชื่อไม่ได้ ตรวจสอบข้อมูลเดิมก่อนเริ่ม'));return;}
+            }
+            store.delete(args.id);
             let successor=records[0]??null,createdDefault=false,reason='';
-            if(!successor){
-              reason=damaged.length?'บิลที่เหลือเปิดไม่ได้ ตรวจสอบข้อมูลเดิม':!initialized?.value&&sourceAttention(developmentStorage);
+            if(!successor||args.createReplacement){
+              reason=args.createReplacement?'':damaged.length?'บิลที่เหลือเปิดไม่ได้ ตรวจสอบข้อมูลเดิม':!initialized?.value&&sourceAttention(developmentStorage);
               if(!reason){
                 successor=fresh(args.replacementId,args.mutationId,automaticName(values,false),emptyBill());
                 store.add(successor);

@@ -1,9 +1,10 @@
-const SCROLL_KEY='fairshare.main-scroll.v2:';
+import {mainScrollKey} from './bill-work-keys.mjs';
 export function createMainScroll({storage,getEpoch}){
+  const lifetime=new AbortController(),signal=lifetime.signal;
   let epoch,offsets={menu:0,summary:0},active=null,restoring=false,generation=0,frame=0;
   if('scrollRestoration' in history)history.scrollRestoration='manual';
-  function sync(){if(epoch===getEpoch())return;epoch=getEpoch();offsets={menu:0,summary:0};try{const saved=JSON.parse(storage?.getItem(SCROLL_KEY+epoch));if(saved?.epoch===epoch)for(const page of ['menu','summary'])if(Number.isFinite(saved[page])&&saved[page]>=0)offsets[page]=saved[page];}catch{}}
-  function persist(){try{storage?.setItem(SCROLL_KEY+epoch,JSON.stringify({epoch,...offsets}));}catch{}}
+  function sync(){if(epoch===getEpoch())return;epoch=getEpoch();offsets={menu:0,summary:0};try{const saved=JSON.parse(storage?.getItem(mainScrollKey(epoch)));if(saved?.epoch===epoch)for(const page of ['menu','summary'])if(Number.isFinite(saved[page])&&saved[page]>=0)offsets[page]=saved[page];}catch{}}
+  function persist(){try{storage?.setItem(mainScrollKey(epoch),JSON.stringify({epoch,...offsets}));}catch{}}
   function capture(){sync();if(active&&!restoring){offsets[active]=scrollY;persist();}}
   function leave(){capture();active=null;generation++;cancelAnimationFrame(frame);restoring=false;}
   function before(page){sync();if(active===page)capture();restoring=true;generation++;cancelAnimationFrame(frame);}
@@ -18,11 +19,11 @@ export function createMainScroll({storage,getEpoch}){
   }
   function after(page){active=page;restore({top:offsets[page]});}
   function restoreTransient(position){leave();restore({left:position.x,top:position.y});}
-  window.addEventListener('scroll',capture,{passive:true});window.addEventListener('pagehide',capture);
+  window.addEventListener('scroll',capture,{passive:true,signal});window.addEventListener('pagehide',capture,{signal});
   // A deliberate gesture can interrupt restoration rather than fighting the user.
   const interrupt=()=>{if(restoring){generation++;cancelAnimationFrame(frame);restoring=false;capture();}};
-  window.addEventListener('wheel',interrupt,{passive:true});window.addEventListener('touchstart',interrupt,{passive:true});
-  return {before,after,leave,capture,restoreTransient,reset(){leave();epoch=getEpoch();offsets={menu:0,summary:0};persist();},get generation(){return generation;},get restoring(){return restoring;}};
+  window.addEventListener('wheel',interrupt,{passive:true,signal});window.addEventListener('touchstart',interrupt,{passive:true,signal});
+  return {before,after,leave,capture,restoreTransient,dispose(){leave();lifetime.abort();},reset(){leave();epoch=getEpoch();offsets={menu:0,summary:0};persist();},get generation(){return generation;},get restoring(){return restoring;}};
 }
 
 // CSS owns positioning. Only the export bar's actual size reserves document space.

@@ -1,6 +1,6 @@
 // Current application contract. Legacy extraction modules remain comparison references.
 import {normalizeAssignmentLocks,allocationOvercommitted} from './item-allocation.mjs';
-export const VERSION=1;
+const VERSION=1;
 export function newId(random=globalThis.crypto){
   if(typeof random.randomUUID==='function')return random.randomUUID();
   // getRandomValues also works on a local HTTP device preview. Keep UUID v4
@@ -17,8 +17,10 @@ export function cents(value){
   if(!/^\d+(?:\.\d{1,2})?$/.test(text))throw Error('กรอกจำนวนเงินไม่เกิน 2 ตำแหน่ง');
   const [a,b='']=text.split('.');return integer(Number(a)*100+Number(b.padEnd(2,'0')));
 }
-export function ratio(amount,numerator,denominator){
+function ratio(amount,numerator,denominator){
   integer(amount);integer(numerator);integer(denominator,1);
+  // Integer satang, rounded half up. Rates use hundredths of one percent:
+  // 1000 / 10000 is 10%, without a floating-point money intermediate.
   return integer(Number((BigInt(amount)*BigInt(numerator)*2n+BigInt(denominator))/(2n*BigInt(denominator))));
 }
 export const money=c=>(c/100).toLocaleString('th-TH',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -65,69 +67,103 @@ export function normalizeBillPolicy(b){
 }
 // Exact largest-remainder allocation; ties follow stored participant order.
 export function allocate(total,weights){
-  integer(total);weights.forEach(w=>integer(w));
-  const sum=weights.reduce((a,b)=>a+b,0);integer(sum);
-  if(!sum)return weights.map(()=>0);
-  const den=BigInt(sum),parts=weights.map((w,i)=>({i,n:Number(BigInt(total)*BigInt(w)/den),r:BigInt(total)*BigInt(w)%den}));
-  let rest=total-parts.reduce((s,p)=>s+p.n,0);
-  for(const p of [...parts].sort((a,b)=>a.r===b.r?a.i-b.i:a.r>b.r?-1:1)){if(rest--<=0)break;p.n++;}
-  return parts.map(p=>p.n);
+  weights.forEach(w=>integer(w));integer(weights.reduce((a,b)=>a+b,0));
+  return allocateWeights(total,weights);
+}
+function allocateWeights(total,weights){
+  integer(total);
+  const denominator = weights.reduce((sum, weight) => sum + BigInt(weight), 0n);
+  if (!denominator) return weights.map(() => 0);
+  const parts = weights.map((weight, index) => {
+    const numerator = BigInt(total) * BigInt(weight);
+    return {index, amount: Number(numerator / denominator), remainder: numerator % denominator};
+  });
+  let remaining = total - parts.reduce((sum, part) => sum + part.amount, 0);
+  const remainderOrder = [...parts].sort((a, b) => a.remainder === b.remainder
+    ? a.index - b.index : a.remainder > b.remainder ? -1 : 1);
+  for (const part of remainderOrder) {
+    if (remaining-- <= 0) break;
+    part.amount++;
+  }
+  return parts.map(part => part.amount);
 }
 export function shares(it){
-  const total=itemTotal(it),as=it.assignments;
-  const locked=as.reduce((s,a)=>s+(a.locked?a.amountCents:0),0);
-  if(locked>total)throw Error('ยอดที่ล็อกไว้เกินราคารายการ');
-  const unlocked=as.filter(a=>!a.locked),amounts=allocate(total-locked,unlocked.map(()=>1));let i=0;
-  return as.map(a=>({personId:a.personId,amountCents:a.locked?a.amountCents:amounts[i++]}));
+  const total = itemTotal(it);
+  const assignments = it.assignments;
+  const locked = assignments.reduce((sum, assignment) => sum + (assignment.locked ? assignment.amountCents : 0), 0);
+  if (locked > total) throw Error('ยอดที่ล็อกไว้เกินราคารายการ');
+  const unlocked = assignments.filter(assignment => !assignment.locked);
+  const amounts = allocate(total - locked, unlocked.map(() => 1));
+  let index = 0;
+  return assignments.map(assignment => ({
+    personId: assignment.personId,
+    amountCents: assignment.locked ? assignment.amountCents : amounts[index++]
+  }));
 }
-export function calculate(b){
-  validateBill(b);const totals=Object.fromEntries(b.people.map(p=>[p.id,{subtotal:0,service:0,tax:0,discount:0,total:0}]));
-  let subtotal=0,grand=0,unallocated=0;const groups=[];const warnings=[];
-  for(const g of b.groups){
-    const base=b.people.map(()=>0);let full=0;
-    for(const it of b.items.filter(it=>it.groupId===g.id)){
-      full=integer(full+itemTotal(it));
-      for(const a of shares(it)){const i=b.people.findIndex(p=>p.id===a.personId);base[i]+=a.amountCents;}
+export function calculate(bill) {
+  validateBill(bill);
+  const totals = Object.fromEntries(bill.people.map(person => [person.id, {
+    subtotal: 0, service: 0, tax: 0, discount: 0, total: 0
+  }]));
+  let subtotal = 0, grand = 0, unallocated = 0;
+  const groups = [], warnings = [];
+  for (const group of bill.groups) {
+    const base = bill.people.map(() => 0);
+    let full = 0;
+    for (const item of bill.items.filter(item => item.groupId === group.id)) {
+      full = integer(full + itemTotal(item));
+      for (const assignment of shares(item)) {
+        const index = bill.people.findIndex(person => person.id === assignment.personId);
+        base[index] += assignment.amountCents;
+      }
     }
-    const missing=full-base.reduce((s,n)=>s+n,0);base.push(missing);
-    const amount=(a,n)=>!a.enabled?0:a.kind==='fixed'?a.value:ratio(n,a.value,10000);
-    const equalWeights=values=>{
-      const sum=values.reduce((s,n)=>s+n,0),miss=values.at(-1);
+    const missing = full - base.reduce((sum, amount) => sum + amount, 0);
+    base.push(missing);
+    const amount = (adjustment, basis) => !adjustment.enabled ? 0
+      : adjustment.kind === 'fixed' ? adjustment.value : ratio(basis, adjustment.value, 10000);
+    const equalWeights = values => {
+      const sum = values.reduce((total, value) => total + value, 0);
+      const missing = values.at(-1);
       // Reserve the unallocated fraction before equal distribution to people.
-      return b.people.length?[...b.people.map(()=>sum-miss),miss*b.people.length]:[1];
+      // BigInt weights prevent overflow even when the participant count is large.
+      return bill.people.length
+        ? [...bill.people.map(() => sum - missing), BigInt(missing) * BigInt(bill.people.length)] : [1];
     };
-    const split=(n,weights)=>allocate(n,weights.some(w=>w>0)?weights:weights.map((_,i)=>i===weights.length-1?1:0));
-    const distribute=(n,values,mode)=>split(n,mode==='equal'?equalWeights(values):values);
-    const svc=amount(g.service,full),services=distribute(svc,base,g.serviceDist);
-    const vatBase=integer(full+svc);
-    if(g.tax.enabled&&g.tax.treatment==='unknown')warnings.push('กรุณาตรวจสอบว่าราคารวมภาษีแล้วหรือยัง');
-    const vat=g.tax.treatment==='excluded'?amount(g.tax,vatBase):0;
-    const withService=base.map((n,i)=>n+services[i]),taxes=split(vat,withService);
-    const pre=withService.map((n,i)=>n+taxes[i]);
-    const afterCut=Math.min(amount(g.discount,vatBase+vat),vatBase+vat);
-    const ds=distribute(afterCut,pre,g.discountDist);
-    const final=pre.map((n,i)=>integer(n-ds[i],-1e12));
-    for(let i=0;i<b.people.length;i++){
-      const p=totals[b.people[i].id];p.subtotal=integer(p.subtotal+base[i]);p.service=integer(p.service+services[i]);p.tax=integer(p.tax+taxes[i]);p.discount=integer(p.discount+ds[i]);p.total=integer(p.total+final[i],-1e12);
+    const split = (total, weights) => allocateWeights(total, weights.some(weight => weight > 0)
+      ? weights : weights.map((_, index) => index === weights.length - 1 ? 1 : 0));
+    const distribute = (total, values, mode) => split(total, mode === 'equal' ? equalWeights(values) : values);
+    // Financial ordering is service, then excluded VAT, then discount.
+    const service = amount(group.service, full);
+    const services = distribute(service, base, group.serviceDist);
+    const vatBase = integer(full + service);
+    if (group.tax.enabled && group.tax.treatment === 'unknown') {
+      warnings.push('กรุณาตรวจสอบว่าราคารวมภาษีแล้วหรือยัง');
     }
-    const total=integer(vatBase+vat-afterCut);subtotal=integer(subtotal+full);grand=integer(grand+total);unallocated+=final.at(-1);
-    groups.push({id:g.id,subtotal:full,service:svc,tax:vat,discount:afterCut,total,difference:g.printedTotalCents==null?null:total-g.printedTotalCents});
+    const vat = group.tax.treatment === 'excluded' ? amount(group.tax, vatBase) : 0;
+    const withService = base.map((value, index) => value + services[index]);
+    const taxes = split(vat, withService);
+    const beforeDiscount = withService.map((value, index) => value + taxes[index]);
+    const discount = Math.min(amount(group.discount, vatBase + vat), vatBase + vat);
+    const discounts = distribute(discount, beforeDiscount, group.discountDist);
+    const final = beforeDiscount.map((value, index) => integer(value - discounts[index], -1e12));
+    for (let index = 0; index < bill.people.length; index++) {
+      const person = totals[bill.people[index].id];
+      person.subtotal = integer(person.subtotal + base[index]);
+      person.service = integer(person.service + services[index]);
+      person.tax = integer(person.tax + taxes[index]);
+      person.discount = integer(person.discount + discounts[index]);
+      person.total = integer(person.total + final[index], -1e12);
+    }
+    const total = integer(vatBase + vat - discount);
+    subtotal = integer(subtotal + full);
+    grand = integer(grand + total);
+    unallocated += final.at(-1);
+    groups.push({id: group.id, subtotal: full, service, tax: vat, discount, total,
+      difference: group.printedTotalCents == null ? null : total - group.printedTotalCents});
   }
-  if(Object.values(totals).some(p=>p.total<0))warnings.push('ส่วนลดแบบหารเท่าทำให้บางคนมียอดติดลบ ลองเลือกแบ่งส่วนลดตามสัดส่วน');
-  if(unallocated)warnings.push('ยังมีรายการที่แบ่งจ่ายไม่ครบ');
-  return {subtotal,grand,unallocated,people:totals,groups,warnings:[...new Set(warnings)]};
-}
-export function editBill(b,change){const next=copy(b);next.undo=null;change(next);next.revision++;return normalizeBillPolicy(next);}
-export function previewImport(b,draft,{mode='append'}={}){
-  validateBill(b);if(!draft||!draft.id||!['append','replace'].includes(mode))throw Error('ข้อมูลนำเข้าไม่ถูกต้อง');
-  if(b.imports.includes(draft.id))throw Error('นำเข้าใบเสร็จนี้แล้ว');
-  const next=copy(b);next.undo=null;
-  if(mode==='replace'){next.items=[];next.groups=next.groups.filter(g=>g.id==='manual');}
-  next.groups.push(copy(draft.group));next.items.push(...copy(draft.items));next.imports.push(draft.id);next.revision++;
-  const normalized=normalizeBillPolicy(next);return {next:normalized,summary:calculate(normalized),mode};
-}
-export function commitImport(b,draft,options){if(draft.group.tax.enabled&&draft.group.tax.treatment==='unknown')throw Error('กรุณาเลือกการคิดภาษีก่อนนำเข้า');const {next}=previewImport(b,draft,options);const before=copy(b);before.undo=null;next.undo={before,atRevision:next.revision};return normalizeBillPolicy(next);}
-export function undoImport(b){
-  validateBill(b);if(!b.undo||b.undo.atRevision!==b.revision)throw Error('ย้อนกลับไม่ได้หลังจากแก้ไขบิลแล้ว');
-  const next=copy(b.undo.before);next.revision=b.revision+1;next.imports=[...b.imports];next.undo=null;return normalizeBillPolicy(next);
+  if (Object.values(totals).some(person => person.total < 0)) {
+    warnings.push('ส่วนลดแบบหารเท่าทำให้บางคนมียอดติดลบ ลองเลือกแบ่งส่วนลดตามสัดส่วน');
+  }
+  if (unallocated) warnings.push('ยังมีรายการที่แบ่งจ่ายไม่ครบ');
+  return {subtotal, grand, unallocated, people: totals, groups, warnings: [...new Set(warnings)]};
 }

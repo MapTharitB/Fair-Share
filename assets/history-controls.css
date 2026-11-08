@@ -1,6 +1,23 @@
-.history-controls{display:flex;gap:4px;align-items:center;flex:none}
+.history-controls{
+  display:flex;gap:var(--space-4);align-items:center;flex:none;
+  --history-disabled-rim:var(--color-history-disabled-line);
+  --history-disabled-ink:var(--color-history-disabled-ink);
+}
+:is(#hdr,.top-bar) .history-controls{
+  --history-disabled-rim:var(--color-history-disabled-line-dark);
+  --history-disabled-ink:var(--color-history-disabled-ink-dark);
+}
 .history-controls[hidden]{display:none}
-.history-button{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:44px;min-height:44px;width:calc(var(--history-label-width,54px) + 39px);padding:6px 8px;border:1px solid var(--border,var(--b,#38332C));border-radius:9px;background:transparent;color:var(--gold,var(--a,#C87D3E));font:500 12px 'Sarabun',sans-serif;white-space:nowrap;cursor:pointer;touch-action:manipulation}
+.history-button{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-5);min-width:var(--size-standard-target);min-height:var(--size-standard-target);width:calc(var(--history-label-width,54px) + 39px);padding:var(--space-6) var(--space-8);border:var(--border-thin) solid var(--color-history-rim);border-radius:var(--radius-control);background:var(--surface-raised-navy);color:var(--color-history-ink);box-shadow:var(--shadow-history);font:500 12px var(--font-body);white-space:nowrap;cursor:pointer;touch-action:manipulation}
 .history-button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
-.history-button:disabled{opacity:.3;cursor:default}.history-button:not(:disabled):hover{background:#C87D3E18}.history-button:focus-visible{outline:2px solid #D9924A;outline-offset:2px}
-.history-controls.compact .history-button{width:44px}.history-controls.compact .history-button span{display:none}
+.history-button:disabled{
+  background:transparent;
+  border-color:var(--history-disabled-rim);
+  color:var(--history-disabled-ink);
+  box-shadow:none;
+  opacity:var(--opacity-history-disabled);
+  cursor:default;
+}
+.history-button:not(:disabled):is(:where(.pointer-hover):hover,:where(.pointer-hover):active){border-color:var(--color-history-ink)}
+.history-button:focus-visible{outline:var(--border-emphasis) solid var(--focus-ink,var(--color-focus));outline-offset:2px}
+.history-controls.compact .history-button{width:var(--size-standard-target)}.history-controls.compact .history-button span{display:none}

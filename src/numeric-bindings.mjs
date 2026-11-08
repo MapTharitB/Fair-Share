@@ -76,6 +76,17 @@ export const numericInputs = (() => {
       }
     });
   }
+  function bindAdjustmentEvents(input, {onInput, onCommit, onFocus}) {
+    input.addEventListener('input', onInput);
+    input.addEventListener('blur', onCommit);
+    input.addEventListener('focus', onFocus);
+    input.addEventListener('paste', event => {
+      event.preventDefault();
+      input.value = (event.clipboardData || window.clipboardData).getData('text');
+      onInput();
+    });
+    addTriggers(input, onCommit);
+  }
   function bindPercAdj(input, onCommit) {
     function doI() {
       const text = processPlain(input.value, 3, 1);
@@ -92,18 +103,14 @@ export const numericInputs = (() => {
       atFocus = input.value;
       onCommit(value);
     }
-    input.addEventListener('input', doI);
-    input.addEventListener('blur', doC);
-    input.addEventListener('focus', () => {
-      atFocus = input.value;
-      input.select();
+    bindAdjustmentEvents(input, {
+      onInput: doI,
+      onCommit: doC,
+      onFocus() {
+        atFocus = input.value;
+        input.select();
+      }
     });
-    input.addEventListener('paste', e => {
-      e.preventDefault();
-      input.value = (e.clipboardData || window.clipboardData).getData('text');
-      doI();
-    });
-    addTriggers(input, doC);
   }
   function bindMoneyAdj(input, onCommit, {
     trimZeros = false
@@ -130,18 +137,14 @@ export const numericInputs = (() => {
       atFocus = input.value;
       onCommit(value);
     }
-    input.addEventListener('input', doI);
-    input.addEventListener('blur', doC);
-    input.addEventListener('focus', () => {
-      atFocus = input.value;
-      input.select();
+    bindAdjustmentEvents(input, {
+      onInput: doI,
+      onCommit: doC,
+      onFocus() {
+        atFocus = input.value;
+        input.select();
+      }
     });
-    input.addEventListener('paste', e => {
-      e.preventDefault();
-      input.value = (e.clipboardData || window.clipboardData).getData('text');
-      doI();
-    });
-    addTriggers(input, doC);
   }
   function bindNumeric(input, {
     allowDecimal = true,

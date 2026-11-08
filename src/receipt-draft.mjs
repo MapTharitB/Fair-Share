@@ -1,4 +1,4 @@
-import {parseReceipt,parseItemLine,initializeSummaryEdits,resolveSummaryState,getDerivedValues} from './receipt-parser.mjs';
+import {parseReceipt,initializeSummaryEdits,resolveSummaryState,getDerivedValues} from './receipt-parser.mjs';
 import {adjustment,cents,newId,validateBill,emptyBill} from './bill-state.mjs';
 
 // Public receipt summary entry point.
@@ -17,13 +17,18 @@ export function receiptReviewSummary(subtotal,source,edits,mode,treatment){
 }
 
 const clone=value=>structuredClone(value);
-const reviewSubtotal=review=>Math.round(review.rows.filter(r=>!r.isDiscount).reduce((sum,row)=>sum+getDerivedValues(row).lineTotal,0)*100)/100;
+export function reviewSubtotal(review) {
+  const subtotal = review.rows.filter(row => !row.isDiscount)
+    .reduce((sum, row) => sum + getDerivedValues(row).lineTotal, 0);
+  return Math.round(subtotal * 100) / 100;
+}
 function validateReview(review){
   if(typeof review.raw!=='string'||review.raw.length>100000||!Array.isArray(review.rows)||review.rows.length>10000)throw Error('เปิดฉบับร่างไม่ได้ โปรดกลับไปแยกเมนูจากข้อความอีกครั้ง');
   const ids=new Set();
   for(const row of review.rows){
     if(typeof row.id!=='string'||!row.id||ids.has(row.id)||typeof row.itemName!=='string'||row.itemName.length>200||!Number.isInteger(row.qty)||row.qty<1||row.qty>99||!['unit_price','line_total'].includes(row.priceSource)||!Number.isFinite(row.priceValue)||row.priceValue<0||row.priceValue>1e10)throw Error('ข้อมูลเมนูในฉบับร่างไม่ถูกต้อง โปรดกลับไปตรวจสอบข้อความ');
     ids.add(row.id);
+    if(row.flags!=null&&(!Array.isArray(row.flags)||row.flags.some(flag=>!flag||typeof flag.type!=='string'||(flag.msg!=null&&typeof flag.msg!=='string'))))throw Error('ข้อมูลเมนูในฉบับร่างไม่ถูกต้อง โปรดกลับไปตรวจสอบข้อความ');
   }
   for(const value of Object.values(review.summaryEdits??{}))if(value!=null&&(!Number.isFinite(value)||value<0))throw Error('ข้อมูลปรับยอดในฉบับร่างไม่ถูกต้อง');
   for(const key of ['service_charge','vat','discount']){
@@ -69,16 +74,14 @@ export function copyReceiptForImport(draft){
 function parseDraft(raw,{id=newId}={}){
   if(typeof raw!=='string'||raw.length>100000)throw Error('ข้อความใบเสร็จยาวเกินไป');
   const normalized=raw.replace(/[๐-๙]/g,c=>String(c.charCodeAt(0)-0x0e50)).replace(/\u0e4d\u0e32/g,'ำ');
-  const parsed=parseReceipt(normalized),groupId=id(),group={id:groupId,name:'ใบเสร็จ',...adjustment()};
-  // Legacy filters can discard valid generic food names. Retain plausible omitted
-  // price lines for explicit review rather than treating them as certain items.
-  const compact=line=>line.replace(/\s+/g,' ').trim();
-  const parsedEvidence=parsed.rows.map(r=>compact(r.rawLine));
-  for(const line of normalized.split(/\r?\n/).map(l=>l.trim()).filter(Boolean)){
-    if(!/\p{L}/u.test(line)||!/[\d,]+\.\d{2}\s*$/.test(line)||parsedEvidence.some(rawLine=>rawLine.includes(compact(line))))continue;
-    if(/^(?:service|svc|sc\b|vat|tax|subtotal|total|grand|net|cash|change|discount|ส่วนลด|ค่าบริการ|ภาษี|รวม|ยอด|สุทธิ|เงินสด|เงินทอน|โทร|tel|date|วันที่|เวลา|เลขที่|ถนน|ที่อยู่)/i.test(line))continue;
-    const row=parseItemLine(line,null);row.needsReview=true;row.flags.push({type:'recovered_line',msg:'พบรายการที่ต้องตรวจสอบ'});parsed.rows.push(row);
-  }
+  const notices=[];
+  const parsed=parseReceipt(normalized,{recoverOmitted:true,onSummaryEntries(entries){
+    const vat=entries.filter(e=>e.kind==='vat'&&/^(?:vat|value added tax|ภาษี(?:มูลค่าเพิ่ม)?)\s*(?:inclusive|included|incl\.|รวมในราคา|รวมอยู่ในราคา)/i.test(e.norm));
+    if(vat.length)notices.push(`ใบเสร็จระบุ “${vat.map(e=>e.raw).join(' / ')}” หากราคาอาหารรวมภาษีแล้ว ให้ตั้ง VAT เป็น 0 เพื่อไม่ให้คิดซ้ำ`);
+    const discounts=entries.filter(e=>e.kind==='discount');
+    if(discounts.filter(e=>e.hasPct).length>1)notices.push(`พบส่วนลดหลายอัตรา “${discounts.map(e=>e.raw).join(' / ')}” ค่าเริ่มต้นใช้อัตราแรก ตรวจสอบและแก้ยอดส่วนลดให้ตรงกับใบเสร็จ`);
+  }});
+  const groupId=id(),group={id:groupId,name:'ใบเสร็จ',...adjustment()};
   const source=parsed.summarySource;
   for(const [key,field] of [['service','service_charge'],['tax','vat'],['discount','discount']]){
     const a=source[field];if(a)group[key]={...group[key],enabled:true,kind:a.mode==='percent'?'rate':'fixed',value:a.mode==='percent'?Math.round(a.value*100):cents(a.value.toFixed(2))};
@@ -87,7 +90,6 @@ function parseDraft(raw,{id=newId}={}){
   const totalLines=normalized.split(/\r?\n/).filter(l=>/^\s*(?:grand\s*total|net\s*total|total|ยอดชำระสุทธิ|ยอดสุทธิ|ยอดรวมสุทธิ|รวมทั้งสิ้น|ยอดรวมทั้งสิ้น|รวมทั้งหมด|ยอดรวม)\s*[:：]?\s*(?:฿|\$|THB|บาท)?\s*[\d,]+(?:\.\d{1,2})?\s*(?:บาท|฿)?\s*$/i.test(l));
   if(totalLines.length){const match=totalLines.at(-1).match(/([\d,]+(?:\.\d{1,2})?)\s*(?:บาท|฿)?\s*$/);group.printedTotalCents=cents(match[1]);}
   const items=parsed.rows.filter(r=>!r.isDiscount).map(r=>({id:id(),groupId,name:r.itemName,quantity:r.qty,priceSource:r.priceSource,priceCents:cents(r.priceValue.toFixed(2)),assignments:[],needsReview:r.needsReview,rawLine:r.rawLine,flags:r.flags}));
-  const notices=[];
   if(source.discount?.extraAmountSum){
     const subtotal=items.reduce((s,r)=>s+(r.priceSource==='line_total'?r.priceCents:r.priceCents*r.quantity),0)/100;
     const edits=initializeSummaryEdits(subtotal,source);

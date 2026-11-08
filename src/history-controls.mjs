@@ -1,4 +1,8 @@
 const icon=redo=>`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${redo?'M21 10a9 9 0 1 0-2.6 8.4M21 4v6h-6':'M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6'}"/></svg>`;
+export function historyNeedsCompact(labelWidth, availableWidth) {
+  return 2 * (labelWidth + 39) + 4 > availableWidth;
+}
+
 export function mountHistoryControls(host,{scope,onUndo,onRedo,editors}){
   host.classList.add('history-controls');
   const buttons=[['ย้อนกลับ',onUndo,false],['ทำซ้ำ',onRedo,true]].map(([label,action,redo])=>{

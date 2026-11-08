@@ -1,7 +1,7 @@
-import {openSheet,customName} from './in-app-confirm.mjs';
-import {isEmptyBillContent} from './bill-operations.mjs';
+import {openSheet,customName,setSheetText} from './in-app-confirm.mjs';
+import {isEmptyBillContent,isProtectedDefault} from './bill-operations.mjs';
 import {billName} from './bill-repository.mjs';
-import {calculate,money,newId} from './bill-state.mjs';
+import {calculate,money} from './bill-state.mjs';
 
 const dateFormat=new Intl.DateTimeFormat('th-TH',{dateStyle:'medium',timeStyle:'short'});
 const actions=[
@@ -14,7 +14,6 @@ const actions=[
   ['dishes','clear-dishes','ลบเมนูอาหารทั้งหมด'],
   ['delete','delete-bill','ลบบิลนี้']
 ];
-function isProtectedDefault(record,library){return !!record&&record.name==='ร้านอาหาร 1'&&isEmptyBillContent(record.bill)&&library.records.length===1&&!library.damaged.length&&library.records[0].id===record.id;}
 function element(tag,content){
   const node=document.createElement(tag);
   if(content!=null)node.textContent=content;
@@ -273,34 +272,49 @@ export function createBillControls({repository,selector,actionsButton,getContext
     catch(error){input.setAttribute('aria-invalid','true');throw error;}
   }
   const cancel={label:'ยกเลิก',value:false};
-  async function confirmDelete(target,operation){
+  const replaceLabel='ลบบิลเดิมและสร้างบิลใหม่';
+  function chooseNew(target){
+    return openSheet({
+      title:'สร้างบิลใหม่',className:'new-bill-sheet',fallback,
+      mount:host=>{setSheetText(host.body,['บิล ',customName(target.name),' บันทึกอัตโนมัติในเบราว์เซอร์นี้แล้ว สามารถเปิดอีกครั้งได้จากปุ่ม ',customName('เลือกบิล')]);},
+      actions:[
+        {label:'บันทึกและสร้างบิลใหม่',value:'save',className:'sheet-primary'},
+        {label:replaceLabel,value:'delete',className:'sheet-danger'},
+        cancel
+      ]
+    });
+  }
+  async function confirmDelete(target,operation,{canReuse=()=>false}={}){
     let captured=target;
-    if(isProtectedDefault(target,await repository.list()))return null;
-    if(isEmptyBillContent(captured.bill)){
+    if(!operation.createReplacement&&isProtectedDefault(target,await repository.list()))return null;
+    if(!operation.createReplacement&&isEmptyBillContent(captured.bill)){
       const outcome=operation.outcome=await repository.removeAndSelect({...operation,expectedRevision:captured.recordRevision});
       if(outcome.status==='saved')return outcome;
       if(outcome.status==='conflict'&&outcome.record&&!isEmptyBillContent(outcome.record.bill))captured=outcome.record;
       else{onError(outcome.message);return null;}
     }
-    const title=()=> ['ลบบิล ',customName(captured.name),' ใช่ไหม?'];
+    const title=()=> operation.createReplacement?replaceLabel+'?':['ลบบิล ',customName(captured.name),' ใช่ไหม?'];
     function explain(host){
-      host.body.replaceChildren(document.createTextNode('บิลนี้ รวมถึงรายชื่อ '+captured.bill.people.length+' คน เมนู '+captured.bill.items.length+' รายการ และข้อมูลการหารจ่ายจะถูกลบ บิลอื่นและไฟล์ที่ดาวน์โหลดไว้จะยังอยู่'));
+      const body=operation.createReplacement
+        ?['บิล ',customName(captured.name),' และข้อมูลทั้งหมดในบิลนี้จะถูกลบก่อนที่จะสร้างบิลใหม่']
+        :'บิลนี้ รวมถึงรายชื่อ '+captured.bill.people.length+' คน เมนู '+captured.bill.items.length+' รายการ และข้อมูลการหารจ่ายจะถูกลบ บิลอื่นและไฟล์ที่ดาวน์โหลดไว้จะยังอยู่';
+      setSheetText(host.body,body);
       const warning=element('span','(ไม่สามารถย้อนกลับได้)');warning.className='sheet-irreversible';host.heading.append(warning);
     }
     return openSheet({title:title(),fallback,mount:explain,
-      actions:[cancel,{label:'ลบบิลนี้',className:'sheet-danger',run:async host=>{
+      actions:[cancel,{label:operation.createReplacement?'ลบและสร้างบิลใหม่':'ลบบิลนี้',className:'sheet-danger',run:async host=>{
         const outcome=operation.outcome?.status==='uncertain'?await repository.reconcileOperation(operation)
-          :await repository.removeAndSelect({...operation,expectedRevision:captured.recordRevision});
+          :await repository.removeAndSelect({...operation,expectedRevision:captured.recordRevision,allowReuse:canReuse()});
         operation.outcome=outcome;
         if(outcome.status==='conflict'&&outcome.record){
           captured=outcome.record;
           host.setTitle(title());
           explain(host);
-          throw Error('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดแล้วกดลบบิลนี้อีกครั้ง');
+          throw Error('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดแล้วกด'+(operation.createReplacement?'ลบและสร้างบิลใหม่':'ลบบิลนี้')+'อีกครั้ง');
         }
         if(outcome.status==='missing')host.footer.querySelector('.sheet-danger').dataset.wasDisabled='true';
         if(outcome.status==='uncertain')host.footer.querySelector('.sheet-danger').textContent='ตรวจสอบการลบ';
-        if(outcome.status!=='saved')throw Error(outcome.message);
+        if(!['saved','reused'].includes(outcome.status))throw Error(outcome.message);
         return outcome;
       }}]});
   }
@@ -388,74 +402,8 @@ export function createBillControls({repository,selector,actionsButton,getContext
       if(unavailable.length)host.body.append(element('p','เปิดข้อมูลบางส่วนไม่ได้: '+unavailable.join(', ')));
     }});
   }
-  return {openSelector,openActions,close,refresh,get keyboard(){return keyboard;},get interaction(){return interaction;},dispose:()=>{close();lifetime.abort();},confirmDelete,importFile,details,evidence};
+  return {openSelector,openActions,close,refresh,get keyboard(){return keyboard;},get interaction(){return interaction;},dispose:()=>{close();lifetime.abort();},chooseNew,confirmDelete,importFile,details,evidence};
 }
 
 // A name edit owns its captured bill/revision until it saves or is cancelled.
 // Navigation calls settle(); failures never silently retry on a second blur.
-export function createBillNameEditor({input,feedback,getContext,repository,onSaved,onStateChange=()=>{}}){
-  let target=null,pending=null,problem='',uncertain=false,mutationId=null,refreshRecord=null,composing=false,selectOnPointerUp=false;
-  const scope=new AbortController(),options={signal:scope.signal};
-  const dirty=()=>!!refreshRecord||!!target&&(input.value!==target.name||uncertain);
-  function show(message=''){
-    problem=message;feedback.hidden=!message;
-    const recovery=uncertain||refreshRecord?'แตะชื่อบิลหรือกด Enter เพื่อตรวจสอบอีกครั้ง':'กด Enter เพื่อลองอีกครั้ง';
-    feedback.querySelector('[role=alert]').textContent=message?message+' · '+recovery:'';
-    if(message)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
-  }
-  function refresh(){
-    const context=getContext();
-    if(!target&&!pending&&!refreshRecord)input.value=context.record?.name??'';
-    input.disabled=!context.available||!context.record||context.mutationBlocked||!!pending;
-    input.readOnly=uncertain||!!refreshRecord;
-    input.toggleAttribute('data-unsaved',dirty());
-    onStateChange({busy:!!pending,problem:!!problem});
-  }
-  function cancelEdit(){
-    if(pending||uncertain||refreshRecord)return;
-    const captured=target;target=null;show();
-    if(captured&&captured.recordRevision!==getContext().record?.recordRevision){
-      refreshRecord=captured;input.value=captured.name;void settle({retry:true});
-    }
-    refresh();input.blur();
-  }
-  async function write(){
-    try{
-      if(!refreshRecord){
-        const change=input.value.trim()?{kind:'rename',name:billName(input.value)}:{kind:'rename-default'};
-        const outcome=uncertain?await repository.reconcileOperation({id:target.id,mutationId})
-          :await repository.write({id:target.id,expectedRevision:target.recordRevision,mutationId:mutationId??=newId(),change});
-        if(outcome.status==='conflict'&&outcome.record){target=outcome.record;mutationId=null;throw Error('บิลนี้มีการเปลี่ยนแปลง ชื่อล่าสุด: '+target.name+' เช็กชื่อที่กรอกแล้วลองบันทึกอีกครั้ง');}
-        if(outcome.status==='uncertain')uncertain=true;
-        if(!['saved','unchanged'].includes(outcome.status))throw Error(outcome.message);
-        refreshRecord=outcome.record;uncertain=false;mutationId=null;input.value=outcome.record.name;
-      }
-      await onSaved(refreshRecord);refreshRecord=null;target=null;show();return true;
-    }catch(error){show(error.message);return false;}
-  }
-  function settle({retry:explicit=false}={}){
-    if(pending)return pending;
-    if(composing)return Promise.resolve(false);
-    if(problem&&!explicit)return Promise.resolve(false);
-    if(!dirty()){target=null;show();refresh();return Promise.resolve(true);}
-    pending=Promise.resolve().then(write).finally(()=>{pending=null;refresh();});refresh();return pending;
-  }
-  input.addEventListener('focus',()=>{
-    if(!target){target=getContext().record;mutationId=null;selectOnPointerUp=/^ร้านอาหาร [1-9]\d*$/.test(input.value);input.setSelectionRange(selectOnPointerUp?0:input.value.length,input.value.length);}
-  },options);
-  input.addEventListener('pointerup',()=>{
-    if(problem&&(uncertain||refreshRecord)){void settle({retry:true});return;}
-    if(selectOnPointerUp){input.select();selectOnPointerUp=false;}
-  },options);
-  input.addEventListener('input',()=>{show();refresh();},options);
-  input.addEventListener('compositionstart',()=>{composing=true;},options);
-  input.addEventListener('compositionend',()=>{composing=false;},options);
-  input.addEventListener('keydown',event=>{
-    if(composing||event.isComposing||event.keyCode===229)return;
-    if(event.key==='Escape'){event.preventDefault();cancelEdit();}
-    if(event.key==='Enter'){event.preventDefault();if(!event.repeat)void settle({retry:true}).then(saved=>{if(saved)input.blur();});}
-  },options);
-  input.addEventListener('blur',()=>{void settle();},options);
-  refresh();
-  return {refresh,settle,get dirty(){return dirty();},get busy(){return !!pending;},get unsettled(){return dirty()||!!pending||!!problem;},dispose(){scope.abort();}};
-}

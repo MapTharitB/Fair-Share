@@ -6,6 +6,18 @@
     const script = document.createElement('script');
     script.type = 'module';
     script.src = new URL(entry, document.baseURI).href;
+    script.addEventListener('error', () => {
+      const notice = document.createElement('main');
+      notice.className = 'empty';
+      const message = document.createElement('p');
+      message.setAttribute('role', 'alert');
+      message.textContent = 'โหลดแอปไม่สำเร็จ กรุณาลองเปิดหน้านี้อีกครั้ง';
+      const retry = document.createElement('a');
+      retry.href = location.href;
+      retry.textContent = 'ลองใหม่';
+      notice.append(message, retry);
+      document.body.replaceChildren(notice);
+    }, {once: true});
     document.body.append(script);
     return;
   }
@@ -13,10 +25,10 @@
   const style = document.createElement('style');
   style.textContent = `
     html, body { height: auto; min-height: 100%; overflow: auto; }
-    body { margin: 0; background: #18150F; color: #F0EAE0; }
+    body { margin: 0; background: var(--color-background,Canvas); color: var(--color-text,CanvasText); }
     .file-startup { box-sizing: border-box; max-width: 560px; margin: 10vh auto;
       padding: 24px; font: 16px/1.7 Sarabun, sans-serif; overflow-wrap: anywhere; }
-    .file-startup h1 { font-size: 24px; line-height: 1.4; color: #D9924A; }
+    .file-startup h1 { font-size: 24px; line-height: 1.4; color: var(--color-orange-on-light,LinkText); }
     .file-startup p { margin: 16px 0; }
   `;
   document.head.append(style);

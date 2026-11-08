@@ -12,42 +12,24 @@ export function formatPctForDisplay(rate) {
   const r = Math.round(rate * 100) / 100;
   return Number.isInteger(r) ? String(r) : r.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
-export function renderChargeCard(kind, label, view) {
-  return [
-    `<div class="sum-card" data-summary-card="${kind}">`,
-    `<div class="sum-lbl">${label}`,
-    `</div>`,
-    `<div class="sum-pair">`,
-    `<div class="sum-field canonical">`,
-    `<input class="sum-input" data-summary-input="${kind}:rate" value="${escapeHtml(formatPctForDisplay(view.rate))}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />`,
-    `<span class="sum-field-lbl">%</span>`,
-    `</div>`,
-    `<div class="sum-field derived">`,
-    `<input class="sum-input" data-summary-input="${kind}:amount" value="${escapeHtml(formatMoneyDisplay(view.amount))}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />`,
-    `<span class="sum-field-lbl">฿</span>`,
-    `</div>`,
-    `</div>`,
-    `</div>`
-  ].join('');
+function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel='') {
+  const fields = [['rate',rate,'%'],['amount',amount,'฿']].map(([field,value,unit])=>
+    `<div class="sum-field ${field===canonical?'canonical':'derived'}">
+      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" value="${escapeHtml(value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
+      <span class="sum-field-lbl" aria-hidden="true">${unit}</span>
+    </div>`).join('');
+  const responsiveLabel = shortLabel ? ` data-full-label="${label}" data-short-label="${shortLabel}"` : '';
+  return `<div class="sum-card" data-summary-card="${kind}">
+    <div class="sum-lbl"${responsiveLabel}>${label}</div>
+    <div class="sum-pair">${fields}</div>
+  </div>`;
+}
+export function renderChargeCard(kind, label, view, shortLabel) {
+  return renderAdjustmentCard(kind,label,formatPctForDisplay(view.rate),formatMoneyDisplay(view.amount),'rate',shortLabel);
 }
 export function renderDiscountCard(view) {
-  const isPercent = view.mode === "rate";
-  return [
-    `<div class="sum-card" data-summary-card="discount">`,
-    `<div class="sum-lbl">ส่วนลด`,
-    `</div>`,
-    `<div class="sum-pair">`,
-    `<div class="sum-field ${isPercent ? 'canonical' : 'derived'}">`,
-    `<input class="sum-input" data-summary-input="discount:rate" value="${escapeHtml(formatPctForDisplay(view.rate))}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />`,
-    `<span class="sum-field-lbl">%</span>`,
-    `</div>`,
-    `<div class="sum-field ${!isPercent ? 'canonical' : 'derived'}">`,
-    `<input class="sum-input" data-summary-input="discount:amount" value="${escapeHtml(formatMoney(Math.abs(view.amount)))}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />`,
-    `<span class="sum-field-lbl">฿</span>`,
-    `</div>`,
-    `</div>`,
-    `</div>`
-  ].join('');
+  return renderAdjustmentCard('discount','ส่วนลด',formatPctForDisplay(view.rate),
+    formatMoney(Math.abs(view.amount)),view.mode==='rate'?'rate':'amount');
 }
 export function flattenHtmlTable(html) {
   if (!/<table|<tr/i.test(html)) return null;

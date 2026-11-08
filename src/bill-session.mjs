@@ -1,28 +1,40 @@
 import {newId,emptyBill} from './bill-state.mjs';
-import {admittedBill} from './bill-repository.mjs';
+import {admittedBill} from './bill-admission.mjs';
 import {createHistory,sameValue} from './history.mjs';
-export const HISTORY_KEY='fairshare.bill-history.v2:';
+import {billHistoryKey,receiptDraftKey,mainScrollKey,billUiKey} from './bill-work-keys.mjs';
+export {HISTORY_KEY} from './bill-work-keys.mjs';
 const MAX_BYTES=2*1024*1024;
 const clone=value=>structuredClone(value);
 const content=bill=>{const b=clone(bill);delete b.revision;delete b.undo;delete b.imports;return b;};
 const snapshot=(value,imports)=>({...emptyBill(),...clone(value),imports:[...imports],undo:null});
 const fits=value=>new TextEncoder().encode(JSON.stringify(value)).length<=MAX_BYTES;
-export function purgeBillWork(storage,id){for(const key of [HISTORY_KEY+id,'fairshare.approved-parser.v3:'+id,'fairshare.main-scroll.v2:'+id,'fairshare.ui.v2:'+id])try{storage?.removeItem(key);}catch{}}
+export function purgeBillWork(storage,id){for(const key of [billHistoryKey(id),receiptDraftKey(id),mainScrollKey(id),billUiKey(id)])try{storage?.removeItem(key);}catch{}}
 export function createBillSession({repository,billId,sessionStorage}){
   let record=null,history=null,persistence='session',blocked=false,busy=false;
-  const key=HISTORY_KEY+billId;
+  const key=billHistoryKey(billId);
   function write(value){try{if(!sessionStorage||!fits(value))return false;const raw=JSON.stringify(value);sessionStorage.setItem(key,raw);return sessionStorage.getItem(key)===raw;}catch{return false;}}
   const envelope=(r=record,h=history)=>({format:2,billId,revision:r.bill.revision,content:content(r.bill),history:h.serialize()});
   function result(status,message){return {status,bill:record&&clone(record.bill),record:record&&clone(record),historyPersistence:persistence,message};}
-  async function load(){
+  async function load({canAdopt=()=>true}={}){
     try{
-      const next=await repository.read(billId);blocked=false;
+      const next=await repository.read(billId);
       if(!next){blocked=true;return result('missing','ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์');}
+      // The owner can acquire local work during readback. Reject before either
+      // revision or persisted history changes, so that work keeps its baseline.
+      if(!canAdopt(next))return result('conflict','บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดก่อนบันทึก');
+      blocked=false;
       const old=record,oldHistory=history;record=next;history=createHistory(content(next.bill));let restored=false;
       if(oldHistory&&old.bill.revision===next.bill.revision&&sameValue(content(old.bill),content(next.bill))){history=oldHistory;restored=true;}
       try{
         let saved=JSON.parse(sessionStorage?.getItem(key)||'null');
-        if(saved?.pending){const p=saved.pending;saved=next.lastMutationId===p.mutationId?p.to:sameValue(content(next.bill),p.from.content)&&next.bill.revision===p.from.revision?p.from:null;}
+        if (saved?.pending) {
+          const pending = saved.pending;
+          // A matching durable mutation proves the staged destination. Otherwise
+          // retain the source timeline only when its money and revision still match.
+          if (next.lastMutationId === pending.mutationId) saved = pending.to;
+          else if (sameValue(content(next.bill), pending.from.content) && next.bill.revision === pending.from.revision) saved = pending.from;
+          else saved = null;
+        }
         if(!restored&&saved?.format===2&&saved.billId===billId&&saved.revision===next.bill.revision&&sameValue(saved.content,content(next.bill))&&fits(saved)){
           const restoredHistory=createHistory(null,{serialized:saved.history});for(const state of saved.history.states)admittedBill(snapshot(state,next.bill.imports));
           if(!sameValue(restoredHistory.current,content(next.bill)))throw Error('ประวัติไม่ตรงกับบิล');history=restoredHistory;restored=true;
@@ -52,7 +64,13 @@ export function createBillSession({repository,billId,sessionStorage}){
       const from=envelope(),to=envelope(pendingRecord,h);
       persistence=write({...from,pending:{kind,from,to,mutationId}})?'session':'memory';
       const outcome=await repository.write({id:billId,expectedRevision:baseRevision,mutationId,change:{kind:'content',bill:next}});
-      if(!['saved','unchanged'].includes(outcome.status)){if(['conflict','missing','uncertain'].includes(outcome.status))blocked=true;if(outcome.status!=='uncertain')write(from);return result(outcome.status,outcome.message);}
+      if (!['saved','unchanged'].includes(outcome.status)) {
+        if (['conflict','missing','uncertain'].includes(outcome.status)) blocked = true;
+        // An uncertain response must keep the staged history until readback can
+        // distinguish a committed write from one that never became durable.
+        if (outcome.status !== 'uncertain') write(from);
+        return result(outcome.status, outcome.message);
+      }
       record=outcome.record;history=h;persistence=write(envelope())?'session':'memory';
       return result(outcome.status,persistence==='session'?undefined:'บิลบันทึกแล้ว แต่ประวัติย้อนกลับอาจหายเมื่อโหลดใหม่');
     }catch(error){return result(blocked?'conflict':'failed',error.message);}finally{busy=false;}

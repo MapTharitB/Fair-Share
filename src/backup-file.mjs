@@ -1,4 +1,5 @@
-import {billName,admittedBill} from './bill-repository.mjs';
+import {billName} from './bill-repository.mjs';
+import {admittedBill} from './bill-admission.mjs';
 export function decodeBillFile(raw){
   let value;try{value=JSON.parse(raw);}catch{throw Error('เปิดไฟล์นี้ไม่ได้ เลือกไฟล์สำรองที่ดาวน์โหลดจาก หารจ่ายแฟร์ๆ');}
   if(value?.format!=null){

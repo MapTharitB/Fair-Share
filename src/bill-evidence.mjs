@@ -1,5 +1,7 @@
-import {admittedBill,billName,DEVELOPMENT_BILL_KEYS} from './bill-repository.mjs';
+import {billName,DEVELOPMENT_BILL_KEYS} from './bill-repository.mjs';
+import {admittedBill} from './bill-admission.mjs';
 import {decodeBillFile} from './backup-file.mjs';
+import {billHistoryKey,receiptDraftKey} from './bill-work-keys.mjs';
 
 export const DEVELOPMENT_WORK_KEYS=['fairshare.bill-history.v1','fairshare.approved-parser'];
 
@@ -28,8 +30,8 @@ export async function readBillEvidence({repository,developmentStorage,sessionSto
   }
   DEVELOPMENT_WORK_KEYS.forEach((key,index)=>collect(index?'ฉบับร่างใบเสร็จเดิม':'ประวัติการแก้ไขเดิม',()=>sessionStorage.getItem(key)));
   if(billId){
-    collect('ฉบับร่างใบเสร็จของบิลนี้',()=>sessionStorage.getItem('fairshare.approved-parser.v3:'+billId));
-    collect('ประวัติการแก้ไขของบิลนี้',()=>sessionStorage.getItem('fairshare.bill-history.v2:'+billId));
+    collect('ฉบับร่างใบเสร็จของบิลนี้',()=>sessionStorage.getItem(receiptDraftKey(billId)));
+    collect('ประวัติการแก้ไขของบิลนี้',()=>sessionStorage.getItem(billHistoryKey(billId)));
     if(repository){
       let record;
       try{record=await repository.readRaw(billId);}
