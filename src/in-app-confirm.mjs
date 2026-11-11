@@ -1,3 +1,4 @@
+import {createInteractionBusy} from './interaction-busy.mjs';
 let active=null,sequence=0;
 export const customName=value=>({em:String(value)});
 export function setSheetText(node,value){
@@ -23,19 +24,20 @@ function showSheet({title,body='',actions=[],className='',fallback,mount,restore
   document.body.append(dialog);
   return new Promise(resolve=>{
     let dispose=()=>{},finished=false;
+    const interaction=createInteractionBusy(dialog);
     const guardExit=event=>{if(active?.dialog===dialog&&active.busy){event.preventDefault();event.returnValue='';}};
     window.addEventListener('beforeunload',guardExit);
     const host={dialog,body:content,footer,heading,busy:false,parent,
       error(message){setSheetText(error,message);error.hidden=false;error.focus({preventScroll:true});error.scrollIntoView({block:'nearest'});},
       clearError(){error.hidden=true;},
       setTitle(value){setSheetText(heading,value);},
-      setBusy(value){host.busy=value;if(value)dialog.setAttribute('aria-busy','true');else dialog.removeAttribute('aria-busy');for(const input of dialog.querySelectorAll('button,input')){if(value){input.dataset.wasDisabled=String(input.disabled);input.disabled=true;}else{input.disabled=input.dataset.wasDisabled==='true';delete input.dataset.wasDisabled;}}},
+      setBusy(value){if(finished)return;host.busy=!!value;interaction.setBusy(host.busy);if(host.busy)dialog.setAttribute('aria-busy','true');else dialog.removeAttribute('aria-busy');},
       async dismiss(value=null){
         if(active!==host||host.busy)return;
         if(hasUnsavedChanges?.()&&!await confirmDiscard({parent:host,fallback:heading}))return;
         host.finish(value);
       },
-      finish(value){if(finished||host.busy||active!==host)return;finished=true;dispose();window.removeEventListener('beforeunload',guardExit);window.visualViewport?.removeEventListener('resize',bounds);window.visualViewport?.removeEventListener('scroll',bounds);dialog.close();dialog.remove();active=parent;if(scroller){scroller.style.overflow=scroll.appOverflow;scroller.scrollTop=scroll.inner;}else{document.documentElement.style.overflow=scroll.overflow;window.scrollTo(scroll.x,scroll.y);}if(typeof restoreFocus==='function'?restoreFocus(value):restoreFocus){const target=opener?.isConnected&&opener.getClientRects().length&&!opener.disabled&&opener.matches('button,a,input,textarea,select,[tabindex]')?opener:(typeof fallback==='function'?fallback():fallback)??document.querySelector('#bill-selector,#submitBtn');target?.focus?.({preventScroll:true});}resolve(value);}
+      finish(value){if(finished||host.busy||active!==host)return;finished=true;dispose();interaction.dispose();window.removeEventListener('beforeunload',guardExit);window.visualViewport?.removeEventListener('resize',bounds);window.visualViewport?.removeEventListener('scroll',bounds);dialog.close();dialog.remove();active=parent;if(scroller){scroller.style.overflow=scroll.appOverflow;scroller.scrollTop=scroll.inner;}else{document.documentElement.style.overflow=scroll.overflow;window.scrollTo(scroll.x,scroll.y);}if(typeof restoreFocus==='function'?restoreFocus(value):restoreFocus){const target=opener?.isConnected&&opener.getClientRects().length&&!opener.disabled&&opener.matches('button,a,input,textarea,select,[tabindex]')?opener:(typeof fallback==='function'?fallback():fallback)??document.querySelector('#bill-selector,#submitBtn');target?.focus?.({preventScroll:true});}resolve(value);}
     };
     active=host;
     function bounds(){const viewport=window.visualViewport,height=viewport?.height??innerHeight;dialog.style.setProperty('--sheet-height',height-16+'px');dialog.style.setProperty('--sheet-bottom',Math.max(0,innerHeight-height-(viewport?.offsetTop??0))+'px');dialog.classList.toggle('sheet-short',height<=520);}

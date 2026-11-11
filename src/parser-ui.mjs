@@ -14,8 +14,10 @@ import {createOcrReader,browserWorker,prepareImage} from './ocr-reader.mjs';
 import {openBillRepository} from './bill-repository.mjs';
 import {newId} from './bill-state.mjs';
 import {trackPointerHover} from './pointer-hover.mjs';
+import {createInteractionBusy} from './interaction-busy.mjs';
 const receiptLifetime=new AbortController();
 trackPointerHover(document,receiptLifetime.signal);
+const receiptInteraction=createInteractionBusy(document.getElementById('app'),{signal:receiptLifetime.signal});
 function onReceipt(type,callback){addEventListener(type,callback,{signal:receiptLifetime.signal});}
 let warnedDraft=null;
 let lastDraft=null,receiptCommitted=false,draftBlocked=false,draftNotice='';
@@ -280,7 +282,14 @@ const importController=createReceiptImportController({
     if(context.inline!==false)showImportError(error.message);
   },returnToBill
 });
-async function submitReceipt(){try{await importController.submit();}finally{showStorageNotice();}}
+async function submitReceipt(){
+  if(importController.busy)return;
+  const pending=importController.submit();
+  // The dialog owns progress and its own actions. Its background also rejects
+  // programmatic activation; native modal inertness alone only covers user input.
+  receiptInteraction.setBusy(importController.busy);
+  try{await pending;}finally{receiptInteraction.setBusy(false);showStorageNotice();}
+}
 const receiptActions={
   bindAction:(element,action)=>editors.bind(element,action),historyMounted:control=>{receiptHistory=control;},
   undo:()=>state.page==='input'?textUndo():undo(),redo:()=>state.page==='input'?textRedo():redo(),

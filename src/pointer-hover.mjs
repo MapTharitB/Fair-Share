@@ -15,10 +15,12 @@ export function trackPointerHover(root,signal){
     for(const node of next)if(!hovered.has(node))node.classList.add('pointer-hover');
     hovered=next;
   },options);
-  root.addEventListener('pointerdown',event=>{if(event.pointerType!=='mouse')clear();},options);
+  // Clear feedback before scoped busy guards stop activation at the window.
+  // The entry installs this policy before creating any interaction guards.
+  root.defaultView.addEventListener('pointerdown',event=>{if(event.pointerType!=='mouse')clear();},options);
   root.addEventListener('pointercancel',clear,options);
   root.addEventListener('pointerout',event=>{if(!event.relatedTarget)clear();},options);
-  root.addEventListener('keydown',clear,options);
+  root.defaultView.addEventListener('keydown',clear,options);
   root.addEventListener('visibilitychange',()=>{if(root.hidden)clear();},options);
   root.defaultView.addEventListener('pagehide',clear,options);
   signal.addEventListener('abort',clear,{once:true});

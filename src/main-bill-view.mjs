@@ -99,16 +99,16 @@ function renderMenuContent(){
   actions.bindBillAction(el.querySelector('#add-it-btn'),actions.addItem,{preserveGesture:true});
   actions.bindBillAction(el.querySelector('#upload-receipt-btn'),actions.uploadReceipt);
   el.querySelectorAll('[data-a="open-it"]').forEach(node=>actions.bindBillAction(node,()=>actions.openItem(node.dataset.id),{preserveGesture:true}));
-  el.querySelectorAll('[data-a="del-it"]').forEach(node=>node.addEventListener('click',event=>{event.stopPropagation();actions.deleteItem(node.dataset.id);}));
+  el.querySelectorAll('[data-a="del-it"]').forEach(node=>actions.bindBillAction(node,()=>actions.deleteItem(node.dataset.id)));
   const svcChk=el.querySelector('#svc-chk'),svcI=el.querySelector('#adj-svc');
-  svcChk?.addEventListener('change',()=>actions.toggleCharge('service',svcChk.checked));
+  actions.bindBillAction(svcChk,()=>{const enabled=!model.working.service.enabled;svcChk.checked=enabled;return actions.toggleCharge('service',enabled);},{preserveGesture:true});
   if(svcI&&!svcI.disabled)NI.bindPercAdj(svcI,value=>actions.editCharge('service',value));
   const taxChk=el.querySelector('#tax-chk'),taxI=el.querySelector('#adj-tax');
-  taxChk?.addEventListener('change',()=>actions.toggleCharge('tax',taxChk.checked));
+  actions.bindBillAction(taxChk,()=>{const enabled=!model.working.tax.enabled;taxChk.checked=enabled;return actions.toggleCharge('tax',enabled);},{preserveGesture:true});
   if(taxI&&!taxI.disabled)NI.bindPercAdj(taxI,value=>actions.editCharge('tax',value));
   const discI=el.querySelector('#adj-disc');
   if(discI){if(dFixed)NI.bindMoneyAdj(discI,actions.editDiscount,{trimZeros:true});else NI.bindPercAdj(discI,actions.editDiscount);}
-  el.querySelectorAll('[data-dm]').forEach(node=>node.addEventListener('click',()=>actions.discountMode(node.dataset.dm)));
+  el.querySelectorAll('[data-dm]').forEach(node=>actions.bindBillAction(node,()=>actions.discountMode(node.dataset.dm)));
 }
 function setSummaryContent(el,controls,details,keepControls){
   if(keepControls){const bar=el.querySelector('#summary-export-bar');el.querySelector('#summary-details').innerHTML=details;if(bar)el.querySelector('#summary-export-bar')?.replaceWith(bar);}
@@ -171,7 +171,7 @@ function renderSummaryContent(keepControls=false){
     h+='</div>';
   });
   h+=renderBillTotals(bt);
-  h+=`<div id="summary-export-bar"><button class="btn--full btn--export btn btn-p" id="btn-download-summary">${ICONS.download} บันทึกสรุปยอดเป็นรูปภาพ</button></div>`;
+  h+=`<div id="summary-export-bar"><button class="btn--full btn--export btn btn-p" id="btn-download-summary" ${model.imageExporting?'disabled':''}>${ICONS.download} บันทึกสรุปยอดเป็นรูปภาพ</button></div>`;
   setSummaryContent(el,controls,h,keepControls);
   el.querySelectorAll('[data-a="person-menus"]').forEach(node=>actions.bindBillAction(node,()=>actions.personMenus(node.dataset.pid)));
   el.querySelectorAll('[data-a="toggle-coll"]').forEach(node=>node.addEventListener('click',()=>actions.toggleCollapsed(node.dataset.pid)));

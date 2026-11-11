@@ -11,13 +11,12 @@ export function createBillNameEditor({input,feedback,getContext,repository,onSav
     feedback.querySelector('[role=alert]').textContent=message?message+' · '+recovery:'';
     if(message)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
   }
-  function refresh(){
-    const context=getContext();
+  function refresh(context=getContext()){
     if(!target&&!pending&&!refreshRecord)input.value=context.record?.name??'';
-    input.disabled=!context.available||!context.record||context.mutationBlocked||!!pending;
+    input.disabled=!context.available||!context.record||!!context.mutationBlocked;
     input.readOnly=uncertain||!!refreshRecord;
     input.toggleAttribute('data-unsaved',dirty());
-    onStateChange({busy:!!pending,problem:!!problem});
+    onStateChange({busy:!!pending,problem:!!problem},context);
   }
   function cancelEdit(){
     if(pending||uncertain||refreshRecord)return;

@@ -246,8 +246,7 @@ export function createBillControls({repository,selector,actionsButton,getContext
     place();
     if(active===popup&&popup.keyboard&&keyboard)focusOption(panel.querySelector('button:not(:disabled)')??panel);
   }
-  function refresh(){
-    const context=getContext();
+  function refresh(context=getContext()){
     selector.disabled=!context.available;
     actionsButton.disabled=!context.available;
     actionsButton.setAttribute('aria-label',context.record?'ตัวเลือกบิล '+context.record.name:'ตัวเลือกบิล');
@@ -312,7 +311,7 @@ export function createBillControls({repository,selector,actionsButton,getContext
           explain(host);
           throw Error('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดแล้วกด'+(operation.createReplacement?'ลบและสร้างบิลใหม่':'ลบบิลนี้')+'อีกครั้ง');
         }
-        if(outcome.status==='missing')host.footer.querySelector('.sheet-danger').dataset.wasDisabled='true';
+        if(outcome.status==='missing')host.footer.querySelector('.sheet-danger').disabled=true;
         if(outcome.status==='uncertain')host.footer.querySelector('.sheet-danger').textContent='ตรวจสอบการลบ';
         if(!['saved','reused'].includes(outcome.status))throw Error(outcome.message);
         return outcome;
@@ -329,7 +328,7 @@ export function createBillControls({repository,selector,actionsButton,getContext
         :await repository.create({...operation,name:enteredName(input),bill:{...bill,undo:null}});
       operation.outcome=outcome;
       if(outcome.status==='uncertain'){
-        input.dataset.wasDisabled='true';
+        input.disabled=true;
         host.footer.querySelector('.sheet-primary').textContent='ตรวจสอบการบันทึก';
       }
       return saveResult(outcome);

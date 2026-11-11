@@ -27,7 +27,12 @@ export function createEditorActions(root=document){
     if(handled&&e.detail>0&&(e.pointerId===undefined||e.pointerId===handled.pointerId)){e.preventDefault();e.stopImmediatePropagation();}
   },options);
   return {
-    bind(button,action){if(button.dataset&&button.tagName!=='BUTTON')button.dataset.editorAction='';actions.set(button,action);button.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();run(action);});},
+    bind(button,action){if(button.dataset&&button.tagName!=='BUTTON')button.dataset.editorAction='';actions.set(button,action);button.addEventListener('click',e=>{
+      // Native keyboard/programmatic choice clicks keep their checked default.
+      // Pointer activation is already owned above, including its follow-up click.
+      if(button.tagName!=='INPUT'||!['checkbox','radio'].includes(button.type))e.preventDefault();
+      e.stopImmediatePropagation();run(action);
+    });},
     run,get composing(){return composing.size>0;},dispose(){controller.abort();composing.clear();pending=null;}
   };
 }

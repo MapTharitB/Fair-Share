@@ -21,6 +21,7 @@ import {createEditorActions} from './editor-actions.mjs';
 import {historyNeedsCompact,mountHistoryControls} from './history-controls.mjs';
 import {billUiKey,receiptDraftKey} from './bill-work-keys.mjs';
 import {trackPointerHover} from './pointer-hover.mjs';
+import {createInteractionBusy} from './interaction-busy.mjs';
 
 import {approvedBill,approvedShares,approvedBillTotals,recalculateApprovedItem} from './approved-ui-bridge.mjs';
 import {emptyBill,newId} from './bill-state.mjs';
@@ -41,14 +42,14 @@ const billController=createMainBillController({repository:repositoryPort,session
     hasPeopleDraft:hasPeopleDraft(),nameDirty:!!nameEditor?.dirty,inputFocused:!!document.activeElement?.matches('input'),sheetOpen:sheetOpen()}),
   onChange:onBillChange});
 const billState=()=>billController.getSnapshot();
-const workingBill=()=>billController.getSnapshot().working;
-const savedBill=()=>billState().record?.bill??emptyBill();
+const workingBill=(snapshot=billState())=>snapshot.working;
+const savedBill=(snapshot=billState())=>snapshot.record?.bill??emptyBill();
 // Bound presentation port for existing checklist callbacks. It cannot retarget a
 // pending callback to another bill and never exposes the controller's session.
 function activeSession(){
   const captured=billState();if(!captured.record)return null;
   const id=captured.billId;
-  const stillCurrent=()=>billState().billId===id;
+  const stillCurrent=()=>billController.billId===id;
   return {
     get billId(){return id;},get record(){return stillCurrent()?billState().record:captured.record;},
     get current(){return stillCurrent()?savedBill():captured.record.bill;},
@@ -68,10 +69,10 @@ let headerHistory;
 function currentItem(){return session?.snapshot().draft??workingBill().items.find(item=>item.id===activeItemId);}
 function installItemDraft(item){if(session)session.edit(draft=>{for(const key of Object.keys(draft))delete draft[key];Object.assign(draft,structuredClone(item));});}
 function recordItem(){if(session&&!editors.composing){session.record();updateHistory();}}
-function updateHistory(){
-  if(!headerHistory||distributionSaving)return;
+function updateHistory(snapshot=billState()){
+  if(!headerHistory||savingPresentation)return;
   const itemView=view==='item-detail';
-  const history=itemView?session:activeSession();
+  const history=itemView?session:snapshot;
   const pending=false;
   const host=document.getElementById('header-history'),header=document.getElementById('hdr');
   const title=document.getElementById('hdr-title'),price=document.getElementById('hdr-item-total'),back=document.getElementById('btn-back');
@@ -88,7 +89,7 @@ function updateHistory(){
   const available=header.clientWidth-parseFloat(headerStyle.paddingLeft)-parseFloat(headerStyle.paddingRight)-titleWidth-priceWidth-gap*(priceWidth?2:1);
   const wrapped=!host.hidden&&available<92;
   header.classList.toggle('history-wrapped',wrapped);
-  const blocked=billState().opening||operationUncertain()||(!itemView&&billState().storageBlocked);
+  const blocked=snapshot.opening||operationUncertain(snapshot)||(!itemView&&snapshot.storageBlocked);
   headerHistory.update({
     canUndo:!blocked&&(!!history?.canUndo||!!pending),
     canRedo:!blocked&&!!history?.canRedo&&!pending,
@@ -188,36 +189,22 @@ function isItemDetailTwoLine(){const el=document.getElementById('screen-item-det
 // ─── 7. BILLSPLIT LOGIC ───────────────────────────────────────────────────────
 let _btCache=null;
 function invalidateBT(){_btCache=null;}
-function getCachedBT(){return _btCache??(_btCache=getBT());}
+function getCachedBT(snapshot=billState()){return _btCache??(_btCache=getBT(snapshot));}
 
 function applyC(item){const result=recalculateApprovedItem(item);item.assignments=result.item.assignments;return result.overallocated;}
 function getDA(item){return approvedShares(item);}
 
 
-function pruneCollapsedPeople(){const live=new Set(workingBill().people.map(p=>p.id));collapsedPeople=new Set([...collapsedPeople].filter(id=>live.has(id)));}
-let savingFocus=null,distributionSaving=false,savingControls=[];
-// Distribution commits retain native focus and visual availability. Block the
-// next activation before the shared document action dispatcher can queue it.
-for(const type of ['pointerdown','pointerup','click','keydown','beforeinput'])listen(window,type,event=>{
-  if(!distributionSaving||!event.target.closest?.('#app')||!event.target.closest?.('button,input,a,label,[role=button]'))return;
-  if(type==='keydown'&&event.key==='Tab')return;
-  event.preventDefault();event.stopImmediatePropagation();
-},{capture:true});
-function setSaving(value,{distribution=false}={}){
-  if(value)savingFocus=document.activeElement;
-  const app=document.getElementById('app');if(value)app.setAttribute('aria-busy','true');else app.removeAttribute('aria-busy');
-  if(value&&distribution){
-    distributionSaving=true;
-    savingControls=[...app.querySelectorAll('button,input')].filter(n=>!n.disabled).map(node=>({node,aria:node.getAttribute('aria-disabled')}));
-    for(const {node} of savingControls)node.setAttribute('aria-disabled','true');
-    return;
-  }
-  if(!value&&distributionSaving){
-    for(const {node,aria} of savingControls)if(aria===null)node.removeAttribute('aria-disabled');else node.setAttribute('aria-disabled',aria);
-    savingControls=[];distributionSaving=false;savingFocus=null;return;
-  }
-  for(const control of app.querySelectorAll('button,input')){if(value){if(control.id==='np-inp'&&view==='people'&&document.activeElement===control)continue;control.dataset.saveDisabled=String(control.disabled);control.disabled=true;}else if(control.dataset.saveDisabled!=null){control.disabled=control.dataset.saveDisabled==='true';delete control.dataset.saveDisabled;}}
-  if(!value&&savingFocus?.isConnected&&savingFocus.matches('input[type=radio],input[type=checkbox]')&&!savingFocus.disabled)savingFocus.focus({preventScroll:true});
+function pruneCollapsedPeople(snapshot=billState()){const live=new Set(workingBill(snapshot).people.map(p=>p.id));collapsedPeople=new Set([...collapsedPeople].filter(id=>live.has(id)));}
+let savingPresentation=false,nameSaving=false,openingPresentation=false;
+const mainInteraction=createInteractionBusy(document.getElementById('app'),{signal:pageLifetime.signal});
+function syncBusy(){
+  mainInteraction.setBusy(savingPresentation||nameSaving||actionBusy);
+  const app=document.getElementById('app');
+  if(savingPresentation||nameSaving||openingPresentation)app.setAttribute('aria-busy','true');else app.removeAttribute('aria-busy');
+}
+function setSaving(value){savingPresentation=value;syncBusy();
+  if(!value){const button=document.getElementById('btn-download-summary');if(button)button.disabled=imageExporting;}
 }
 async function commitCandidate(candidate,options={}){return billController.commit(candidate,options);}
 async function saveS(options={}){
@@ -226,7 +213,7 @@ async function saveS(options={}){
   catch(error){billController.reportInvalid(error);toast('ยังไม่ได้บันทึก: '+error.message);return false;}
 }
 async function runBillAction(action,{allowPending=false,preserveGesture=false}={}){
-  if(actionBusy||billState().opening)return;actionBusy=true;
+  if(actionBusy||billState().opening)return;actionBusy=true;syncBusy();
   try{
     document.activeElement?.blur?.();
     if(!preserveGesture)await Promise.resolve();
@@ -234,31 +221,34 @@ async function runBillAction(action,{allowPending=false,preserveGesture=false}={
     if(billState().saving)await billController.waitForSave();
     if((billState().pendingCandidate||billState().invalidCandidate)&&!allowPending){toast('ยังไม่ได้บันทึก ลองอีกครั้งหรือดาวน์โหลดสิ่งที่แก้ไว้ก่อน');return;}
     return await action();
-  }catch(error){toast(error.message);}finally{actionBusy=false;if(billState().reconciliationQueued)void checkExternalBill();}
+  }catch(error){toast(error.message);}finally{actionBusy=false;syncBusy();if(billState().reconciliationQueued)void checkExternalBill();}
 }
 function bindBillAction(button,action,options){if(button)editors.bind(button,()=>runBillAction(action,options));}
-function uiKey(){return billUiKey(activeSession()?.billId);}
-function saveUiState(){if(!activeSession())return;try{tabStorage?.setItem(uiKey(),JSON.stringify({collapsed:[...collapsedPeople],summaryHintDismissed}));}catch{}}
-const operationUncertain=()=>billState().pendingOperation?.outcome?.status==='uncertain';
-function billControlContext(){
-  const record=billState().missingTarget===activeSession()?.billId?null:activeSession()?.record;
+function uiKey(id=billController.billId){return billUiKey(id);}
+function saveUiState(snapshot=billState()){if(!snapshot.record)return;try{tabStorage?.setItem(uiKey(snapshot.billId),JSON.stringify({collapsed:[...collapsedPeople],summaryHintDismissed}));}catch{}}
+const operationUncertain=(snapshot=billState())=>snapshot.pendingOperation?.outcome?.status==='uncertain';
+function billControlContext(snapshot=billState()){
+  const record=snapshot.missingTarget===snapshot.billId?null:snapshot.record;
   const cleared=record&&clearDishes(record.bill);
   const canClearDishes=cleared&&(!sameValue(cleared.items,record.bill.items)||!sameValue(cleared.groups,record.bill.groups));
   return {
-    available:!!repository&&!billState().opening&&(!billState().saving||distributionSaving),
-    mutationBlocked:operationUncertain()||!!billState().pendingCandidate||billState().invalidCandidate,
+    available:!!repository&&!snapshot.opening,
+    mutationBlocked:operationUncertain(snapshot)||!!snapshot.pendingCandidate&&!snapshot.saving||snapshot.invalidCandidate,
+    mainBlocked:snapshot.opening||snapshot.storageBlocked||!!snapshot.record&&operationUncertain(snapshot),
+    tabsBlocked:snapshot.opening,reconciliationQueued:snapshot.reconciliationQueued,
     record,canClearDishes,canClearPeople:!!record?.bill.people.length
   };
 }
-function updateBillContext(){
+function updateBillContext(snapshot=billState()){
   const row=document.getElementById('bill-context');
   if(!row)return;
   row.hidden=view==='people'||view==='item-detail';
-  const problem=operationUncertain()?billState().pendingOperation.outcome.message:billState().error||billState().openingTarget?.message;
-  recovery.update(problem?`${activeSession()?.billId??billState().missingTarget??'startup'}:${operationUncertain()?'uncertain':billState().entryPhase}:${billState().outcome??''}:${problem}`:'',activeSession()?'ยังไม่ได้บันทึก':'ไม่สามารถเปิดบิลได้');
-  document.getElementById('main').inert=billState().opening||billState().storageBlocked||!!activeSession()&&operationUncertain();
-  document.getElementById('top-tabs').inert=billState().opening;
-  controls?.refresh();nameEditor?.refresh();
+  const uncertain=operationUncertain(snapshot),context=billControlContext(snapshot);
+  const problem=uncertain?snapshot.pendingOperation.outcome.message:snapshot.error||snapshot.openingTarget?.message;
+  recovery.update(problem?`${snapshot.record?snapshot.billId:snapshot.missingTarget??'startup'}:${uncertain?'uncertain':snapshot.entryPhase}:${snapshot.outcome??''}:${problem}`:'',snapshot.record?'ยังไม่ได้บันทึก':'ไม่สามารถเปิดบิลได้');
+  document.getElementById('main').inert=context.mainBlocked;
+  document.getElementById('top-tabs').inert=context.tabsBlocked;
+  controls?.refresh(context);nameEditor?.refresh(context);
 }
 async function installBill(id,targetView,{reason='switch'}={}){
   const installed=await billController.open(id,{reason,targetView});
@@ -282,7 +272,7 @@ function exportCandidate(){
 }
 function isItemDefault(item){return !item.name.trim()&&(!item.price||item.price<=0)&&(!item.assignments||!item.assignments.length);}
 
-function getBT(){try{return approvedBillTotals(workingBill(),savedBill());}catch(error){toast(error.message);return null;}}
+function getBT(snapshot=billState()){try{return approvedBillTotals(workingBill(snapshot),savedBill(snapshot));}catch(error){toast(error.message);return null;}}
 
 function setAllocation(item,pid,value,mode){
   const a=item.assignments.find(a=>a.personId===pid);if(!a)return;
@@ -291,11 +281,11 @@ function setAllocation(item,pid,value,mode){
   else a.lockPercentUnits=Math.round(Math.min(value,100)*10000);
   applyC(item);
 }
-function updateBillTotals(){if(view==='menu'&&menuMount)menuMount.update({...billRenderModel(),totalsOnly:true});}
+function updateBillTotals(snapshot=billState()){if(view==='menu'&&menuMount)menuMount.update({...billRenderModel({},snapshot),totalsOnly:true});}
 function layoutDistribution(){summaryMount?.layout();}
 function updateHdrTotal(total){const el=document.getElementById('hdr-item-total');if(!el)return;if(view==='item-detail'&&total>0){el.textContent=fmt(total,'บาท');el.style.display='block';}else{el.textContent='';el.style.display='none';}}
-function shouldShowSummaryHint(){if(summaryHintDismissed)return false;return workingBill().items.some(it=>it.assignments&&it.assignments.length>0);}
-function updateTabHint(){const sumTab=document.querySelector('.tab-btn[data-tab="summary"]');if(!sumTab)return;if(!sumTab.classList.contains('active')&&shouldShowSummaryHint())sumTab.classList.add('tab-next-step');else sumTab.classList.remove('tab-next-step');}
+function shouldShowSummaryHint(snapshot=billState()){if(summaryHintDismissed)return false;return workingBill(snapshot).items.some(it=>it.assignments&&it.assignments.length>0);}
+function updateTabHint(snapshot=billState()){const sumTab=document.querySelector('.tab-btn[data-tab="summary"]');if(!sumTab)return;if(!sumTab.classList.contains('active')&&shouldShowSummaryHint(snapshot))sumTab.classList.add('tab-next-step');else sumTab.classList.remove('tab-next-step');}
 function setMainTitle(){const el=document.getElementById('hdr-title');el.className='';el.innerHTML=`<span class="title-pre">หารจ่าย</span><span class="title-main">แฟร์ๆ</span>`;}
 function setSubTitle(text){const el=document.getElementById('hdr-title');el.className='subpage-title';el.textContent=text;}
 
@@ -384,16 +374,16 @@ function startSummaryImage(){
 // ─── 8. RENDER FUNCTIONS ──────────────────────────────────────────────────────
 
 let menuMount=null,summaryMount=null;
-function billRenderModel(extra={}){
-  const working=workingBill();
-  return {working,totals:getCachedBT(),collapsed:[...collapsedPeople],
+function billRenderModel(extra={},snapshot=billState()){
+  const working=workingBill(snapshot),totals=getCachedBT(snapshot);
+  return {working,totals,imageExporting,collapsed:[...collapsedPeople],
     labels:Object.fromEntries(working.items.map(item=>[item.id,getSplitLabel(item,working.people)])),
     warnings:Object.fromEntries(working.items.map(item=>[item.id,getItemWarnings(item,working.people)])),
     shares:Object.fromEntries(working.items.map(item=>[item.id,approvedShares(item)])),
-    personWarnings:Object.fromEntries(working.people.map(person=>[person.id,getPersonWarning(person.id,working,getCachedBT())])),...extra};
+    personWarnings:Object.fromEntries(working.people.map(person=>[person.id,getPersonWarning(person.id,working,totals)])),...extra};
 }
-function renderMenu(){
-  mainScroll.before('menu');const model=billRenderModel();
+function renderMenu(snapshot=billState()){
+  mainScroll.before('menu');const model=billRenderModel({},snapshot);
   if(menuMount)menuMount.update(model);else menuMount=mountMenu(model,billViewActions);
   mainScroll.after('menu');
 }
@@ -459,22 +449,22 @@ function itemViewActions(){
   };
 }
 
-function renderSummary({keepControls=false}={}){
+function renderSummary({keepControls=false}={},snapshot=billState()){
   if(!keepControls)mainScroll.before('summary');
-  const model=billRenderModel({keepControls});
+  const model=billRenderModel({keepControls},snapshot);
   if(summaryMount)summaryMount.update(model);else summaryMount=mountSummary(model,billViewActions);
   if(!keepControls)mainScroll.after('summary');
 }
 // ─── 9. RENDER DISPATCHER ────────────────────────────────────────────────────
 
-function renderBillProblem(){
-  updateBillContext();
-  if(activeSession())return;
+function renderBillProblem(snapshot=billState()){
+  updateBillContext(snapshot);
+  if(snapshot.record)return;
   const el=document.getElementById('screen-'+view),empty=document.createElement('div');
   empty.className='empty bill-exception';
   const message=document.createElement('p');
   message.setAttribute('role','status');
-  message.textContent=billState().entryPhase==='loading'?'กำลังเปิดบิล…':billState().error||'เลือกบิลที่ต้องการเปิด';
+  message.textContent=snapshot.entryPhase==='loading'?'กำลังเปิดบิล…':snapshot.error||'เลือกบิลที่ต้องการเปิด';
   empty.append(message);
   function action(label,id,callback,allowPending=false){
     const button=document.createElement('button');
@@ -485,18 +475,18 @@ function renderBillProblem(){
     bindBillAction(button,callback,{allowPending});
     empty.append(button);
   }
-  if(billState().entryPhase!=='loading')action('ดูตัวเลือก','bill-recovery',()=>recovery.show(),true);
+  if(snapshot.entryPhase!=='loading')action('ดูตัวเลือก','bill-recovery',()=>recovery.show(),true);
   el.replaceChildren(empty);
 }
-function render(){
-  updateBillContext();
+function render(snapshot=billState()){
+  updateBillContext(snapshot);
   const oldWork=document.getElementById('old-work');
-  if(oldWork)oldWork.hidden=!activeSession()||!hasOldWork();
-  if(!activeSession()){renderBillProblem();return;}
-  if(view==='menu')renderMenu();
+  if(oldWork)oldWork.hidden=!snapshot.record||!hasOldWork();
+  if(!snapshot.record){renderBillProblem(snapshot);return;}
+  if(view==='menu')renderMenu(snapshot);
   else if(view==='people')renderPeople();
   else if(view==='item-detail')renderItemDetail();
-  else if(view==='summary')renderSummary();
+  else if(view==='summary')renderSummary({},snapshot);
 }
 
 // ─── 10. NAVIGATION ───────────────────────────────────────────────────────────
@@ -760,7 +750,7 @@ listen(document,'focusout',()=>queueMicrotask(updateBillContext));
 const requestedView=()=>new URL(location.href).searchParams.get('view')==='summary'?'summary':'menu';
 function mountBillControls(){
   controls?.dispose();nameEditor?.dispose();
-  nameEditor=createBillNameEditor({input:document.getElementById('bill-selector-name'),feedback:document.getElementById('bill-name-feedback'),repository,getContext:billControlContext,onStateChange:state=>{document.getElementById('main').inert=billState().opening||billState().storageBlocked||!!activeSession()&&operationUncertain()||state.busy||state.problem;document.getElementById('top-tabs').inert=billState().opening||state.problem;if(!state.busy&&!state.problem&&!nameEditor?.unsettled&&billState().reconciliationQueued)queueMicrotask(checkExternalBill);},onSaved:async record=>{
+  nameEditor=createBillNameEditor({input:document.getElementById('bill-selector-name'),feedback:document.getElementById('bill-name-feedback'),repository,getContext:billControlContext,onStateChange:(state,context)=>{nameSaving=state.busy;syncBusy();document.getElementById('main').inert=context.mainBlocked||state.busy||state.problem;document.getElementById('top-tabs').inert=context.tabsBlocked||state.problem;if(!state.busy&&!state.problem&&!nameEditor?.unsettled&&context.reconciliationQueued)queueMicrotask(checkExternalBill);},onSaved:async record=>{
     if(record.id!==billState().billId)return;
     const result=await billController.refresh({preserveWorking:true,quiet:true});
     if(result.status!=='loaded')throw Error(result.message||'เปิดข้อมูลล่าสุดไม่ได้ ลองอีกครั้ง');
@@ -772,20 +762,19 @@ function mountBillControls(){
     onDownload:({text,filename,type})=>downloadText(text,filename,type),onError:toast
   });
 }
-let savingPresentation=false,openingPresentation=false;
 function onBillChange(event){
   const snapshot=event.snapshot;
-  if(snapshot.opening&&!openingPresentation){mainScroll.leave();saveUiState();}
+  if(snapshot.opening&&!openingPresentation){mainScroll.leave();saveUiState(snapshot);}
   openingPresentation=snapshot.opening;
-  if(snapshot.saving!==savingPresentation){setSaving(snapshot.saving,{distribution:snapshot.pendingCandidate?.kind==='distribution'});savingPresentation=snapshot.saving;}
-  if(snapshot.opening||snapshot.saving)document.getElementById('app').setAttribute('aria-busy','true');else document.getElementById('app').removeAttribute('aria-busy');
+  if(snapshot.saving!==savingPresentation)setSaving(snapshot.saving);
+  syncBusy();
   if(event.reason==='opened'){
     // Keep the visible record and URL identity atomic for selection consumers.
     const url=new URL(location.href);url.searchParams.set('bill',snapshot.billId);url.searchParams.delete('select');history.replaceState(history.state,'',url);
     session=null;editingPid=null;peopleReturnTo=null;peopleDraftOwner.reset();
     collapsedPeople.clear();summaryHintDismissed=false;
     try{const ui=JSON.parse(tabStorage?.getItem(uiKey())||'null');collapsedPeople=new Set(ui?.collapsed??[]);summaryHintDismissed=!!ui?.summaryHintDismissed;}catch{}
-    pruneCollapsedPeople();clearHistoryWidths();invalidateBT();
+    pruneCollapsedPeople(snapshot);clearHistoryWidths();invalidateBT();
   }
   if(event.accepted){
     const completed=event.completedPeopleEdit;
@@ -796,12 +785,12 @@ function onBillChange(event){
       renderPeopleList();
     }
     for(const input of document.querySelectorAll('#app .screen.active [data-unsaved]'))delete input.dataset.unsaved;
-    invalidateBT();pruneCollapsedPeople();updateBillTotals();
+    invalidateBT();pruneCollapsedPeople(snapshot);updateBillTotals(snapshot);
   }
-  if(event.reason==='reconciled'&&event.changed){invalidateBT();pruneCollapsedPeople();render();}
+  if(event.reason==='reconciled'&&event.changed){invalidateBT();pruneCollapsedPeople(snapshot);render(snapshot);}
   if(event.reason==='operation-finished')finishLibraryEffects(event);
   if(event.message)toast(event.message);
-  updateBillContext();updateHistory();
+  updateBillContext(snapshot);updateHistory(snapshot);
 }
 async function initialize(){
   const url=new URL(location.href),explicit=url.searchParams.get('bill'),select=url.searchParams.get('select')==='1';

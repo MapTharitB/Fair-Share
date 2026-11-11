@@ -7,7 +7,7 @@ const memberships=(bill,pid)=>new Set(bill.items.filter(it=>it.assignments.some(
 function mountPersonMenuHeader(host){
   const header=document.createElement('div'),back=document.getElementById('btn-back').cloneNode(true);
   header.className='person-menu-header';
-  back.removeAttribute('id');back.removeAttribute('style');
+  back.removeAttribute('id');back.removeAttribute('style');back.removeAttribute('aria-disabled');
   back.type='button';back.setAttribute('aria-label','ยกเลิกการเลือกเมนู');
   back.querySelector('svg').setAttribute('aria-hidden','true');
   back.addEventListener('click',()=>void host.dismiss(false));
@@ -28,7 +28,7 @@ export async function openPersonMenus({session,personId,onSaved,onRefreshed,onEd
       const applied=setPersonMenus(baseline,personId,[...selected]);
       const outcome=await session.commit(applied.bill,{baseRevision:revision,kind:'person-menus',mutationId});
       if(!['saved','unchanged'].includes(outcome.status)){
-        if(['conflict','missing'].includes(outcome.status)){stale=true;host.body.querySelector('#selection-refresh').hidden=false;host.body.querySelector('#selection-export').hidden=false;host.footer.querySelector('#selection-save').dataset.wasDisabled='true';}
+        if(['conflict','missing'].includes(outcome.status)){stale=true;host.body.querySelector('#selection-refresh').hidden=false;host.body.querySelector('#selection-export').hidden=false;host.footer.querySelector('#selection-save').disabled=true;}
         throw Error(outcome.message);
       }
       await onSaved(outcome);return true;
