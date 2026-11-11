@@ -50,8 +50,12 @@ export function normalizeReviewDraft(saved){
 }
 function sameColumns(columns){return Array.isArray(columns)&&columns.length===2&&new Set(columns).size===2&&columns.every(c=>['unit_price','line_total'].includes(c));}
 
+const isReviewItem=row=>!row.isDiscount;
+export function hasReviewItems(review){
+  return review.rows.some(isReviewItem);
+}
 export function buildReviewedDraft(review){
-  validateReview(review);const draft=clone(review.draft),rows=review.rows.filter(r=>!r.isDiscount);
+  validateReview(review);const draft=clone(review.draft),rows=review.rows.filter(isReviewItem);
   if(!rows.length)throw Error('ยังไม่มีเมนูให้เพิ่ม');
   draft.items=rows.map(r=>({id:r.id,groupId:draft.group.id,name:r.itemName,quantity:r.qty,priceSource:r.priceSource,priceCents:Math.round(r.priceValue*100),assignments:[],rawLine:r.rawLine??''}));
   const view=receiptSummary(reviewSubtotal(review),review.summarySource,review.summaryEdits,review.discountCanonical);

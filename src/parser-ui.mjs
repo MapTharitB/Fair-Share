@@ -1,4 +1,4 @@
-import {renderInput,renderReview,renderReceiptVision,showReceiptError} from './receipt-view.mjs';
+import {renderInput,renderReview,renderReceiptVision,showReceiptError,updateReceiptTextControls,receiptActionFallback} from './receipt-view.mjs';
 import {createReceiptOcrController} from './receipt-ocr-controller.mjs';
 import {createReceiptImportController} from './receipt-import-controller.mjs';
 import {createReceiptReviewModel} from './receipt-review-model.mjs';
@@ -121,6 +121,7 @@ function renderVisionZone(){renderReceiptVision(visionState,{readFile:setVisionI
 const uid=newId;
 let parseGeneration=0,textGeneration=0;
 async function parseCurrentText(raw=state.raw,isCurrent=()=>true){
+  if(!raw.trim())return;
   const token=++parseGeneration,inputGeneration=textGeneration;
   const current=()=>token===parseGeneration&&inputGeneration===textGeneration&&isCurrent();
   let result,loaded;
@@ -160,7 +161,7 @@ function checkpointTextAction(raw){if(raw!==state.raw){state.raw=raw;rawCheckpoi
 function textUndo(){textGeneration++;clearTimeout(textDebounceTimer);checkpointTextAction(textHistory.undo(state.raw));}
 function textRedo(){textGeneration++;clearTimeout(textDebounceTimer);checkpointTextAction(textHistory.redo(state.raw));}
 function clearTextArea(){textGeneration++;clearTimeout(textDebounceTimer);if(state.raw==='')return;textHistory.record(state.raw);textHistory.record('');checkpointTextAction('');}
-function syncTextDOM(){const ta=document.getElementById("receiptText");if(ta)ta.value=state.raw;const clearBtn=document.getElementById("clearTaBtn");if(clearBtn)clearBtn.disabled=!state.raw;updateTextUndoRedoBtns();}
+function syncTextDOM(){const ta=document.getElementById("receiptText");if(ta)ta.value=state.raw;updateReceiptTextControls(state.raw);updateTextUndoRedoBtns();}
 function updateTextUndoRedoBtns(){receiptHistory?.update({canUndo:textHistory.canUndo(state.raw),canRedo:textHistory.canRedo});}
 function undo(){if(!reviewModel.canUndo)return;reviewModel.undo();state.editing=null;render();}
 function redo(){if(!reviewModel.canRedo)return;reviewModel.redo();state.editing=null;render();}
@@ -224,7 +225,7 @@ const recovery=createRecoveryNotice({getModel:async()=>editors.composing?null:({
     ...(!targetMissing&&repository?.connectionError!=='VersionError'?[{label:'ลองบันทึกอีกครั้ง',run:async()=>{await checkTarget();persistDraft();showStorageNotice();}}]:[]),
     {label:'ดาวน์โหลดข้อความ',run:downloadReceiptText}
   ]
-}),fallback:()=>document.getElementById('parseBtn')??document.getElementById('submitBtn')});
+}),fallback:receiptActionFallback});
 function showStorageNotice(){
   recovery.update(targetError||draftStorageFailed||draftNotice?`${billId}:${targetError}:${draftNotice}:${draftStorageFailed}`:'','ยังไม่ได้บันทึก');
 }
@@ -238,11 +239,12 @@ function startNewReceipt(){
 async function offerImportedReceipt(){
   if(!receiptCommitted||targetError||draftBlocked)return;
   const result=await openSheet({title:'เพิ่มใบเสร็จนี้ลงบิลแล้ว',className:'receipt-revisit',
-    body:'<p>อัพโหลดใบเสร็จใหม่ หรือดูรายละเอียดใบเสร็จเดิม</p>',
-    actions:[{id:'new-receipt',label:'อัพโหลดใบเสร็จใหม่',className:'sheet-primary',value:'new'},{label:'ดูรายละเอียดเดิม',value:'inspect'}],
-    fallback:()=>document.getElementById('submitBtn')??document.getElementById('parseBtn')});
-  if(result==='new')startNewReceipt();
-  else if(lastDraft){state.page='results';render();document.getElementById('submitBtn')?.focus({preventScroll:true});}
+    body:'<p>อัพโหลดใบเสร็จใหม่ ดูรายละเอียดใบเสร็จเดิม หรือกลับไปหน้าเมนู</p>',
+    actions:[{id:'new-receipt',label:'อัพโหลดใบเสร็จใหม่',className:'sheet-primary',value:'new'},{label:'ดูรายละเอียดเดิม',value:'inspect'},{label:'กลับไปหน้าเมนู',value:'menu'}],
+    fallback:receiptActionFallback});
+  if(result==='menu')await returnToBill();
+  else if(result==='new')startNewReceipt();
+  else if(lastDraft){state.page='results';render();receiptActionFallback()?.focus({preventScroll:true});}
 }
 
 async function showReceiptWarnings(){
@@ -252,7 +254,7 @@ async function showReceiptWarnings(){
   if(!notes.length)return;
   await openSheet({title:'หมายเหตุ',className:'receipt-warnings',
     actions:[{label:'ตกลง',className:'sheet-primary',value:true}],
-    fallback:()=>document.getElementById('submitBtn'),
+    fallback:receiptActionFallback,
     mount:host=>{for(const note of notes){const p=document.createElement('p');p.textContent=note;host.body.append(p);}}
   });
 }
@@ -274,7 +276,7 @@ const importController=createReceiptImportController({
   setBaseRevision:value=>{baseRevision=value;},
   setOptions:options=>reviewModel.setImportOptions(options),persistDraft,
   confirmRepeat:()=>openSheet({title:'เพิ่มใบเสร็จเดิมอีกครั้งหรือไม่?',body:'<p>เคยเพิ่มใบเสร็จนี้ลงบิลไปแล้ว หากเพิ่มต่อจะซ้ำเมนูเดิม</p>',
-    actions:[{label:'ยกเลิก',value:false},{label:'เพิ่มอีกครั้ง',className:'sheet-primary',value:true}],fallback:()=>document.getElementById('submitBtn')}),
+    actions:[{label:'ยกเลิก',value:false},{label:'เพิ่มอีกครั้ง',className:'sheet-primary',value:true}],fallback:receiptActionFallback}),
   chooseImport:openReceiptImport,
   onCommitted:draft=>{lastDraft=draft;receiptCommitted=true;},
   onError:(error,context={})=>{

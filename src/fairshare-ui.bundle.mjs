@@ -836,7 +836,7 @@ function layoutAdjustments(row) {
   const px = (value) => parseFloat(value) || 0, cards = [...row.children];
   const outer = (style) => px(style.paddingLeft) + px(style.paddingRight) + px(style.borderLeftWidth) + px(style.borderRightWidth);
   row.classList.remove("adj-cards-stacked");
-  for (const card of cards) card.classList.remove("ab-wide", "adj-controls-stacked");
+  for (const card of cards) card.classList.remove("ab-wide", "adj-controls-stacked", "discount-switch-wide");
   const compactOuter = cards.map((card) => outer(getComputedStyle(card)));
   for (const card of cards) card.classList.add("ab-wide");
   const gap = px(getComputedStyle(row).columnGap), column = (row.clientWidth - gap * (cards.length - 1)) / cards.length;
@@ -853,6 +853,17 @@ function layoutAdjustments(row) {
   for (const m of metrics) {
     m.card.classList.toggle("ab-wide", wide);
     m.card.classList.toggle("adj-controls-stacked", controlsStacked);
+  }
+  const discount = metrics.find((m) => m.card.id === "disc-adj-bar");
+  if (discount && wide && !stacked) {
+    const switchWidth = discount.card.querySelector(".mtgl").getBoundingClientRect().width;
+    discount.card.style.setProperty("--discount-switch-width", switchWidth * 1.5 + "px");
+    discount.card.classList.add("discount-switch-wide");
+    const expandedWidth = discount.card.querySelector(".adj-bar-ctrl").getBoundingClientRect().width;
+    discount.card.classList.toggle(
+      "discount-switch-wide",
+      expandedWidth + discount.label + discount.wideOuter + discount.gap + 1 <= width
+    );
   }
 }
 function observeChoices(host, update) {

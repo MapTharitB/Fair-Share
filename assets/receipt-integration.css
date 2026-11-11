@@ -3,6 +3,10 @@
 html{height:100%;}
 body{font-family:var(--font-receipt-body);color:var(--color-text);height:100%;overflow:hidden;display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent;}
 #app{display:flex;flex-direction:column;flex:1;min-height:0;overflow-y:auto;}
+/* Review keeps native scrolling without a page-width scrollbar gutter.
+   Table and dialog scrollbars retain their own behavior. */
+#app:has(.res-inner){scrollbar-width:none}
+#app:has(.res-inner)::-webkit-scrollbar{width:0;height:0}
 
 /* ── Vision Upload Zone ── */
 .vision-zone{width:100%;max-width:760px;margin:0 auto var(--space-10);}

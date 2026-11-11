@@ -1,4 +1,4 @@
-import {buildReviewedDraft,copyReceiptForImport} from './receipt-draft.mjs';
+import {buildReviewedDraft,copyReceiptForImport,hasReviewItems} from './receipt-draft.mjs';
 import {importReceipt} from './receipt-import.mjs';
 
 /** Coordinate a submission; the choice sheet retains its repeatable onConfirm callback. */
@@ -6,7 +6,7 @@ export function createReceiptImportController({getSession,getReview,getStatus,se
   setOptions,persistDraft,confirmRepeat,chooseImport,onCommitted,onError,returnToBill}) {
   let busy = false;
   async function submit() {
-    if (busy || getStatus().composing) return;
+    if (busy || getStatus().composing || !hasReviewItems(getReview())) return;
     busy = true;
     let repeatNeeded = false;
     try {

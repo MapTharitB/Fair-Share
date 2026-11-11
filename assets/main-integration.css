@@ -1,5 +1,9 @@
 
 :root{--hdr-h:52px}
+/* Keep viewport width steady as Summary details change the page height.
+   Only the outer scrollbar is hidden; native scrolling and inner scrollbars remain. */
+html{scrollbar-width:none}
+html::-webkit-scrollbar{width:0;height:0}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 body{font-family:var(--font-body);font-size:var(--text-15);color:var(--color-text);overflow-y:auto;-webkit-overflow-scrolling:touch;}
 
@@ -38,11 +42,15 @@ body{font-family:var(--font-body);font-size:var(--text-15);color:var(--color-tex
 #item-warn-area .wb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:var(--space-3);}
 #item-warn-area .wb:last-child{margin-bottom:0}
 .adj-iw{position:relative;display:flex;align-items:center}
-.scard{border-radius:var(--radius-card);border-width:var(--border-thin);border-style:solid;overflow:hidden;margin-bottom:var(--space-9)}
+.scard{position:relative;isolation:isolate;border-radius:var(--radius-card);border-width:var(--border-thin);border-style:solid;overflow:hidden;margin-bottom:var(--space-9)}
+/* One reflection above the subtotal fill and below its text and the card controls. */
+.scard::after{content:'';position:absolute;inset:0;z-index:1;pointer-events:none;background:var(--surface-glass-reflection)}
+.scard > :is(.scard-hdr,.person-card-actions,.person-summary-warning),
+.sbd :is(.pdrow,.trow:not(.trow--person-grand),.trow--person-grand > span){position:relative;z-index:2}
 .scard-hdr{display:flex;align-items:center;justify-content:space-between;padding:var(--space-14);gap:var(--space-10);cursor:pointer;user-select:none;transition:background var(--motion-control)}
 .scard-hdr:where(.pointer-hover):hover{background:var(--color-card-hover)}
 .sname{font-size:var(--text-15);font-weight:700;color:var(--color-text);flex:1;white-space:normal;overflow:hidden;overflow-wrap:anywhere;text-overflow:ellipsis;line-height:1.5;padding-bottom:var(--space-2)}
-.sbd{border-top:var(--border-thin) solid var(--color-border);padding:var(--space-4) var(--space-14) var(--space-10)}
+.sbd{border-top:var(--border-thin) solid var(--color-border);padding:var(--space-4) var(--space-14) var(--space-12)}
 .pdrow{display:flex;align-items:center;padding:var(--space-10) 0;border-bottom:var(--border-thin) solid var(--color-border);gap:var(--space-10)}
 .pdrow:last-child{border-bottom:none}
 .pdi{flex:1;min-width:0}
@@ -84,7 +92,7 @@ input[type=checkbox]{width:16px;height:16px;cursor:pointer;flex-shrink:0}
 .dist-bar.dist-bar-wide .dist-bar-label{font-size:var(--text-13);font-weight:500;text-align:left;color:var(--color-text-muted)}
 .dist-bar.disabled-bar{opacity:0.4;pointer-events:none}
 .p2col{display:grid;grid-template-columns:1fr 1fr}
-.p2cell{background:var(--color-card);display:flex;align-items:center;gap:var(--space-5);padding:var(--space-10) 11px;transition:background var(--motion-control);min-width:0}
+.p2cell{display:flex;align-items:center;gap:var(--space-5);padding:var(--space-10) 11px;transition:background var(--motion-control);min-width:0}
 .p2cell:where(.pointer-hover):hover{background:var(--color-card-hover)}
 .p2cell-name{flex:1;min-width:0;font-size:var(--text-14);font-weight:500;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5;padding-bottom:var(--space-2)}
 .p2cell-edit{grid-column:1/-1;background:var(--color-card-hover);display:flex;align-items:center;gap:var(--space-7);padding:var(--space-9) var(--space-12)}
@@ -114,6 +122,10 @@ input{font-size:var(--text-16);}
 #screen-menu .mtgl-b{transition:background-color var(--motion-control),color var(--motion-control)}
 #screen-menu #disc-adj-bar .mtgl-b{padding-inline:var(--space-5)}
 #screen-menu .adj-controls-stacked .adj-bar-ctrl{flex-direction:column}
+#screen-menu #disc-adj-bar.discount-switch-wide .mtgl{width:var(--discount-switch-width)}
+#screen-menu #disc-adj-bar.discount-switch-wide .mtgl-b{flex:1}
+#screen-menu #disc-adj-bar.discount-switch-wide .adj-bar-ctrl{gap:var(--space-8)}
+#screen-menu #disc-adj-bar.adj-controls-stacked .adj-iw{order:-1}
 .sbd .pdrow{padding-left:var(--space-12)}.pdn{white-space:normal;overflow-wrap:anywhere}
 #add-menu-slot{position:sticky;bottom:0;z-index:89;flex-shrink:0;margin-inline:-16px;padding:var(--space-12) var(--space-16) max(var(--space-12),env(safe-area-inset-bottom));}
 #summary-export-bar{position:fixed;bottom:0;left:0;right:0;z-index:89;padding:var(--space-12) var(--space-16);padding-bottom:max(var(--space-12),env(safe-area-inset-bottom));border-top-width:var(--border-thin);border-top-style:solid;}
@@ -208,7 +220,7 @@ button.scard-hdr:focus-visible{outline:var(--border-emphasis) solid var(--color-
 .adj-iw--rate{width:58px}
 .adj-iw--discount{width:90px}
 .summary-details{display:contents}
-.summary-item-warning{background:var(--color-orange-fill-start) var(--surface-selected);border:var(--border-thin) solid var(--color-orange-fill-start);color:var(--color-danger)}
+.summary-item-warning{background:var(--color-orange-fill-start) var(--surface-item-warning);border:var(--border-thin) solid var(--color-orange-fill-start);color:var(--color-danger)}
 .warning-heading{display:block;margin-bottom:var(--space-4)}
 .warning-item-link{
   flex-shrink:0;

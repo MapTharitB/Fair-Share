@@ -20,13 +20,18 @@ body,
 
 .card,.scard,.sum-card,.ssb-card,.tbl-card,.ta-card,.vision-upload-area,
 .adj-bar,.dist-bar,.totals,.fs-sheet,.ocr-prog-box,.bill-panel,#toast{
-  background:var(--surface-glass);
   border-color:var(--color-glass-rim);
   box-shadow:var(--shadow-card);
 }
+.card,.sum-card,.ssb-card,.tbl-card,.ta-card,.vision-upload-area,
+.adj-bar,.dist-bar,.totals,.fs-sheet,.ocr-prog-box,.bill-panel{
+  background:var(--surface-glass-centered);
+}
+.scard{background:var(--surface-glass-centered-base)}
+#toast{background:var(--surface-glass)}
 
 #bill-name-control,#bill-actions{
-  background:var(--surface-glass);
+  background:var(--surface-glass-centered);
   border:var(--border-thin) solid var(--color-glass-rim);
   box-shadow:var(--shadow-control);
 }
@@ -93,7 +98,7 @@ input[type=checkbox]:disabled{opacity:.5;cursor:not-allowed}
 /* Action roles share paint. Sheet utility controls have their own recipes. */
 .btn-p,.btn-s,.parse-btn,.submit-btn,.clear-ta-btn,.ur-btn-modern,.recovery-status,
 .fs-sheet button:not(:where(.coll-btn,.btn-back,#person-menu-clear)){
-  --action-surface:var(--surface-glass);
+  --action-surface:var(--surface-glass-centered);
   --action-ink:var(--color-text);
   --action-rim:var(--color-glass-rim);
   --action-depth:var(--shadow-control);
@@ -221,7 +226,7 @@ input[type=checkbox]:disabled{opacity:.5;cursor:not-allowed}
 .adj-inp:disabled{--field-ink:var(--color-text-subdued);--field-surface:var(--color-disabled-field-wash);cursor:not-allowed;opacity:.5}
 .adj-sym{position:absolute;right:10px;font-size:var(--text-11);color:var(--color-text-muted);pointer-events:none}
 .it-total-val{font-size:var(--text-15);font-weight:700;font-feature-settings:'tnum';white-space:nowrap;}
-.btn-ocr-upload{background:var(--surface-glass);color:var(--color-orange-on-light);border:var(--border-thin) dashed var(--color-upload-dash);border-radius:var(--radius-control);cursor:pointer;font-family:var(--font-body);font-size:var(--text-13);font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:var(--space-7);width:100%;padding:var(--space-9) var(--space-14);transition:all var(--motion-control);box-shadow:var(--shadow-control)}
+.btn-ocr-upload{background:var(--surface-glass-centered);color:var(--color-orange-on-light);border:var(--border-thin) dashed var(--color-upload-dash);border-radius:var(--radius-control);cursor:pointer;font-family:var(--font-body);font-size:var(--text-13);font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:var(--space-7);width:100%;padding:var(--space-9) var(--space-14);transition:all var(--motion-control);box-shadow:var(--shadow-control)}
 .btn-ocr-upload:where(.pointer-hover):hover{border-color:var(--color-focus);}
 .btn-ocr-upload svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;}
 .back-btn{--back-transition:color var(--motion-control),background var(--motion-control)}.back-btn svg{display:block}
@@ -269,7 +274,7 @@ button.danger-action--outlined:where(.pointer-hover):hover:not(:disabled){border
 }
 .person-menu-sheet .coll-btn{min-height:32px}
 .coll-btn,.mtgl-b,.person-chip{
-  background:var(--surface-glass);
+  background:var(--surface-glass-centered);
   color:var(--color-text);
   box-shadow:var(--shadow-control);
 }
@@ -322,7 +327,14 @@ button.danger-action--outlined:where(.pointer-hover):hover:not(:disabled){border
 .tval--discount{color:var(--color-success)}
 .trow--person-subtotal,.trow--person-adjustment{padding:var(--space-7) 0;border-bottom:none}
 .trow--person-adjustment{padding-block:var(--space-5)}
-.trow--person-grand{border-radius:0 0 var(--radius-card) var(--radius-card);margin-top:var(--space-2)}
+.trow.grand.trow--person-grand{
+  background:var(--color-person-total-fill);
+  border-radius:0 0 var(--radius-sheet) var(--radius-sheet);
+  margin-top:var(--space-10);
+  padding:var(--space-9) var(--space-12);
+}
+.trow.grand.trow--person-grand .tlbl{color:rgb(var(--rgb-black))}
+.trow.grand.trow--person-grand .tval{color:var(--color-orange-on-subtotal)}
 .btn svg.icon-plus{width:15px;height:15px;stroke-width:2}
 
 /* Primary actions attached to the Menu and Summary dock slots. */

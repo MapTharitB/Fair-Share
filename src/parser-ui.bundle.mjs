@@ -1222,9 +1222,13 @@ function normalizeReviewDraft(saved) {
 function sameColumns(columns) {
   return Array.isArray(columns) && columns.length === 2 && new Set(columns).size === 2 && columns.every((c) => ["unit_price", "line_total"].includes(c));
 }
+var isReviewItem = (row) => !row.isDiscount;
+function hasReviewItems(review) {
+  return review.rows.some(isReviewItem);
+}
 function buildReviewedDraft(review) {
   validateReview(review);
-  const draft = clone(review.draft), rows = review.rows.filter((r) => !r.isDiscount);
+  const draft = clone(review.draft), rows = review.rows.filter(isReviewItem);
   if (!rows.length) throw Error("ยังไม่มีเมนูให้เพิ่ม");
   draft.items = rows.map((r) => ({ id: r.id, groupId: draft.group.id, name: r.itemName, quantity: r.qty, priceSource: r.priceSource, priceCents: Math.round(r.priceValue * 100), assignments: [], rawLine: r.rawLine ?? "" }));
   const view = receiptSummary(reviewSubtotal(review), review.summarySource, review.summaryEdits, review.discountCanonical);
@@ -1302,6 +1306,14 @@ function createReceiptReview(raw) {
 }
 
 // src/receipt-view.mjs
+function updateReceiptTextControls(raw) {
+  const clear = document.getElementById("clearTaBtn"), parse = document.getElementById("parseBtn");
+  if (clear) clear.disabled = !raw;
+  if (parse) parse.disabled = !raw.trim();
+}
+function receiptActionFallback() {
+  return document.querySelector("#submitBtn:not(:disabled),#parseBtn:not(:disabled)") ?? document.querySelector("#addBtn,#receiptText");
+}
 function mountViewHistory(model, actions) {
   const history = mountHistoryControls(document.getElementById("receipt-history"), {
     scope: model.page === "input" ? "ข้อความใบเสร็จ" : "รายละเอียดใบเสร็จ",
@@ -1413,7 +1425,7 @@ function renderInput(model, actions) {
     </div>
     <div class="parse-wrap">
       <div class="parse-wrap-inner">
-        <button class="parse-btn" id="parseBtn">แยกเมนูและราคาอัตโนมัติ</button>
+        <button class="parse-btn" id="parseBtn" ${!state2.raw.trim() ? "disabled" : ""}>แยกเมนูและราคาอัตโนมัติ</button>
       </div>
     </div>`;
   renderReceiptVision(model.vision, { readFile: actions.readFile });
@@ -1427,7 +1439,7 @@ function renderInput(model, actions) {
   const ta = document.getElementById("receiptText");
   ta.addEventListener("input", () => {
     actions.rawChanged(ta.value);
-    document.getElementById("clearTaBtn").disabled = !ta.value;
+    updateReceiptTextControls(ta.value);
   });
   ta.addEventListener("paste", (e) => {
     const html = e.clipboardData?.getData("text/html") || "";
@@ -1441,8 +1453,7 @@ function renderInput(model, actions) {
     ta.value = before + flat + after;
     ta.selectionStart = ta.selectionEnd = start + flat.length;
     actions.rawChanged(ta.value);
-    const clearBtn = document.getElementById("clearTaBtn");
-    if (clearBtn) clearBtn.disabled = !ta.value;
+    updateReceiptTextControls(ta.value);
   });
   document.getElementById("clearTaBtn").addEventListener("click", actions.clearText);
   actions.bindAction(document.getElementById("p1BackBtn"), actions.returnToBill);
@@ -1518,7 +1529,7 @@ function renderReview(model, actions) {
       </table></div></div>
       <div class="results-bottom-spacer" aria-hidden="true"></div>
     </div></div>
-    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn">เพิ่มเมนูลงบิล</button></div></div>`;
+    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${hasReviewItems(state2) ? "" : "disabled"}>เพิ่มเมนูลงบิล</button></div></div>`;
   const error = document.createElement("p");
   error.id = "receipt-import-error";
   error.className = "import-error";
@@ -1739,7 +1750,7 @@ function createReceiptImportController({
 }) {
   let busy = false;
   async function submit() {
-    if (busy || getStatus().composing) return;
+    if (busy || getStatus().composing || !hasReviewItems(getReview())) return;
     busy = true;
     let repeatNeeded = false;
     try {
@@ -2276,7 +2287,7 @@ function layoutAdjustments(row) {
   const px = (value) => parseFloat(value) || 0, cards = [...row.children];
   const outer = (style) => px(style.paddingLeft) + px(style.paddingRight) + px(style.borderLeftWidth) + px(style.borderRightWidth);
   row.classList.remove("adj-cards-stacked");
-  for (const card of cards) card.classList.remove("ab-wide", "adj-controls-stacked");
+  for (const card of cards) card.classList.remove("ab-wide", "adj-controls-stacked", "discount-switch-wide");
   const compactOuter = cards.map((card) => outer(getComputedStyle(card)));
   for (const card of cards) card.classList.add("ab-wide");
   const gap = px(getComputedStyle(row).columnGap), column = (row.clientWidth - gap * (cards.length - 1)) / cards.length;
@@ -2293,6 +2304,17 @@ function layoutAdjustments(row) {
   for (const m of metrics) {
     m.card.classList.toggle("ab-wide", wide);
     m.card.classList.toggle("adj-controls-stacked", controlsStacked);
+  }
+  const discount = metrics.find((m) => m.card.id === "disc-adj-bar");
+  if (discount && wide && !stacked) {
+    const switchWidth = discount.card.querySelector(".mtgl").getBoundingClientRect().width;
+    discount.card.style.setProperty("--discount-switch-width", switchWidth * 1.5 + "px");
+    discount.card.classList.add("discount-switch-wide");
+    const expandedWidth = discount.card.querySelector(".adj-bar-ctrl").getBoundingClientRect().width;
+    discount.card.classList.toggle(
+      "discount-switch-wide",
+      expandedWidth + discount.label + discount.wideOuter + discount.gap + 1 <= width
+    );
   }
 }
 function observeChoices(host, update) {
@@ -3518,6 +3540,7 @@ function renderVisionZone() {
 var uid = newId;
 var parseGeneration = 0, textGeneration = 0;
 async function parseCurrentText(raw = state.raw, isCurrent = () => true) {
+  if (!raw.trim()) return;
   const token = ++parseGeneration, inputGeneration = textGeneration;
   const current = () => token === parseGeneration && inputGeneration === textGeneration && isCurrent();
   let result, loaded;
@@ -3610,8 +3633,7 @@ function clearTextArea() {
 function syncTextDOM() {
   const ta = document.getElementById("receiptText");
   if (ta) ta.value = state.raw;
-  const clearBtn = document.getElementById("clearTaBtn");
-  if (clearBtn) clearBtn.disabled = !state.raw;
+  updateReceiptTextControls(state.raw);
   updateTextUndoRedoBtns();
 }
 function updateTextUndoRedoBtns() {
@@ -3766,7 +3788,7 @@ var recovery = createRecoveryNotice({ getModel: async () => editors.composing ? 
     } }] : [],
     { label: "ดาวน์โหลดข้อความ", run: downloadReceiptText }
   ]
-}, fallback: () => document.getElementById("parseBtn") ?? document.getElementById("submitBtn") });
+}, fallback: receiptActionFallback });
 function showStorageNotice() {
   recovery.update(targetError || draftStorageFailed || draftNotice ? `${billId}:${targetError}:${draftNotice}:${draftStorageFailed}` : "", "ยังไม่ได้บันทึก");
 }
@@ -3788,15 +3810,16 @@ async function offerImportedReceipt() {
   const result = await openSheet({
     title: "เพิ่มใบเสร็จนี้ลงบิลแล้ว",
     className: "receipt-revisit",
-    body: "<p>อัพโหลดใบเสร็จใหม่ หรือดูรายละเอียดใบเสร็จเดิม</p>",
-    actions: [{ id: "new-receipt", label: "อัพโหลดใบเสร็จใหม่", className: "sheet-primary", value: "new" }, { label: "ดูรายละเอียดเดิม", value: "inspect" }],
-    fallback: () => document.getElementById("submitBtn") ?? document.getElementById("parseBtn")
+    body: "<p>อัพโหลดใบเสร็จใหม่ ดูรายละเอียดใบเสร็จเดิม หรือกลับไปหน้าเมนู</p>",
+    actions: [{ id: "new-receipt", label: "อัพโหลดใบเสร็จใหม่", className: "sheet-primary", value: "new" }, { label: "ดูรายละเอียดเดิม", value: "inspect" }, { label: "กลับไปหน้าเมนู", value: "menu" }],
+    fallback: receiptActionFallback
   });
-  if (result === "new") startNewReceipt();
+  if (result === "menu") await returnToBill();
+  else if (result === "new") startNewReceipt();
   else if (lastDraft) {
     state.page = "results";
     render();
-    document.getElementById("submitBtn")?.focus({ preventScroll: true });
+    receiptActionFallback()?.focus({ preventScroll: true });
   }
 }
 async function showReceiptWarnings() {
@@ -3808,7 +3831,7 @@ async function showReceiptWarnings() {
     title: "หมายเหตุ",
     className: "receipt-warnings",
     actions: [{ label: "ตกลง", className: "sheet-primary", value: true }],
-    fallback: () => document.getElementById("submitBtn"),
+    fallback: receiptActionFallback,
     mount: (host) => {
       for (const note of notes) {
         const p = document.createElement("p");
@@ -3852,7 +3875,7 @@ var importController = createReceiptImportController({
     title: "เพิ่มใบเสร็จเดิมอีกครั้งหรือไม่?",
     body: "<p>เคยเพิ่มใบเสร็จนี้ลงบิลไปแล้ว หากเพิ่มต่อจะซ้ำเมนูเดิม</p>",
     actions: [{ label: "ยกเลิก", value: false }, { label: "เพิ่มอีกครั้ง", className: "sheet-primary", value: true }],
-    fallback: () => document.getElementById("submitBtn")
+    fallback: receiptActionFallback
   }),
   chooseImport: openReceiptImport,
   onCommitted: (draft) => {

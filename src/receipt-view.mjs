@@ -4,7 +4,17 @@ import {formatMoney,formatMoneyDisplay,formatPctForDisplay,renderChargeCard,rend
 import {mountHistoryControls} from './history-controls.mjs';
 import {mountReceiptLayout,updateReceiptLayout,RECEIPT_PLACEHOLDER} from './receipt-layout.mjs';
 import {getDerivedValues} from './receipt-parser.mjs';
-import {receiptSummary as resolveSummaryState,reviewSubtotal} from './receipt-draft.mjs';
+import {receiptSummary as resolveSummaryState,reviewSubtotal,hasReviewItems} from './receipt-draft.mjs';
+
+export function updateReceiptTextControls(raw){
+  const clear=document.getElementById('clearTaBtn'),parse=document.getElementById('parseBtn');
+  if(clear)clear.disabled=!raw;
+  if(parse)parse.disabled=!raw.trim();
+}
+export function receiptActionFallback(){
+  return document.querySelector('#submitBtn:not(:disabled),#parseBtn:not(:disabled)')
+    ??document.querySelector('#addBtn,#receiptText');
+}
 
 // Render models are copied review/page data. Actions own every edit and async operation.
 function mountViewHistory(model,actions){
@@ -104,7 +114,7 @@ export function renderInput(model,actions) {
     </div>
     <div class="parse-wrap">
       <div class="parse-wrap-inner">
-        <button class="parse-btn" id="parseBtn">แยกเมนูและราคาอัตโนมัติ</button>
+        <button class="parse-btn" id="parseBtn" ${!state.raw.trim()?'disabled':''}>แยกเมนูและราคาอัตโนมัติ</button>
       </div>
     </div>`;
 
@@ -117,14 +127,14 @@ export function renderInput(model,actions) {
   const ta = document.getElementById("receiptText");
   ta.addEventListener('input',()=>{
     actions.rawChanged(ta.value);
-    document.getElementById('clearTaBtn').disabled=!ta.value;
+    updateReceiptTextControls(ta.value);
   });
   ta.addEventListener("paste", e=>{
     const html=e.clipboardData?.getData("text/html")||"";const flat=flattenHtmlTable(html);
     if(flat===null)return;e.preventDefault();
     const start=ta.selectionStart;const end=ta.selectionEnd;const before=ta.value.slice(0,start);const after=ta.value.slice(end);
     ta.value=before+flat+after;ta.selectionStart=ta.selectionEnd=start+flat.length;
-    actions.rawChanged(ta.value);const clearBtn=document.getElementById("clearTaBtn");if(clearBtn)clearBtn.disabled=!ta.value;
+    actions.rawChanged(ta.value);updateReceiptTextControls(ta.value);
 
   });
   document.getElementById("clearTaBtn").addEventListener("click", actions.clearText);
@@ -191,7 +201,7 @@ export function renderReview(model,actions) {
       </table></div></div>
       <div class="results-bottom-spacer" aria-hidden="true"></div>
     </div></div>
-    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn">เพิ่มเมนูลงบิล</button></div></div>`;
+    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${hasReviewItems(state)?'':'disabled'}>เพิ่มเมนูลงบิล</button></div></div>`;
 
   const error=document.createElement('p');error.id='receipt-import-error';error.className='import-error';error.setAttribute('role','alert');error.hidden=true;
   document.querySelector('.results-bottom-spacer').before(error);
