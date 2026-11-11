@@ -263,8 +263,8 @@ async function showReceiptWarnings(){
 
 async function confirmUnresolved(issues){
   const choice=await openSheet({title:'ยังมีรายการที่ต้องตรวจสอบ',className:'receipt-unresolved',
-    body:'<p>โปรดตรวจสอบและแก้ไขรายการที่มีเครื่องหมาย <span class="badge badge-r">?</span> ก่อนเพิ่มเมนูลงบิล</p><p>หากเลือกดำเนินการต่อ ระบบจะใช้จำนวนและราคาที่แสดงในตาราง หากไม่ทราบจำนวน จะนับเป็น 1 หากไม่ทราบราคา จะคิดเป็น 0 บาท ส่วนค่าปรับยอดที่ยังไม่ได้ยืนยันจะไม่นำมาคำนวณ</p>',
-    actions:[{label:'แก้ไข',className:'sheet-primary',value:'edit'},{label:'ดำเนินการต่อ',value:'continue'}],
+    body:'<p>โปรดตรวจสอบและแก้ไขรายการที่มีเครื่องหมาย <span class="badge badge-r">?</span> ก่อนเพิ่มเมนูลงบิล</p><p>หากเลือกทำต่อ ระบบจะใช้จำนวนและราคาที่แสดงในตาราง หากไม่ทราบจำนวน จะนับเป็น 1 หากไม่ทราบราคา จะคิดเป็น 0 บาท ส่วนค่าปรับยอดที่ยังไม่ได้ยืนยันจะไม่นำมาคำนวณ</p>',
+    actions:[{label:'แก้ไข',className:'sheet-primary',value:'edit'},{label:'ทำต่อ',value:'continue'}],
     fallback:receiptActionFallback});
   if(choice==='edit'){
     const first=issues[0];
