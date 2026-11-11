@@ -1048,7 +1048,10 @@ function mountMenu(initial, actions2) {
 function mountSummary(initial, actions2) {
   return mountBillView("summary", initial, actions2);
 }
-function mountBillView(kind, initial, actions2) {
+function renderSummaryImageContent(model, root) {
+  mountBillView("summary", { ...model, collapsed: [] }, null, root);
+}
+function mountBillView(kind, initial, actions2, exportRoot = null) {
   let model = initial, collapsed = new Set(model.collapsed), distributionCleanup = () => {
   }, stickyCleanup = () => {
   }, bottomCleanup = () => {
@@ -1193,6 +1196,10 @@ function mountBillView(kind, initial, actions2) {
     el.querySelectorAll("[data-dm]").forEach((node) => actions2.bindBillAction(node, () => actions2.discountMode(node.dataset.dm)));
   }
   function setSummaryContent(el, controls2, details, keepControls) {
+    if (exportRoot) {
+      el.innerHTML = controls2 + details;
+      return;
+    }
     if (keepControls) {
       const bar = el.querySelector("#summary-export-bar");
       el.querySelector("#summary-details").innerHTML = details;
@@ -1205,7 +1212,7 @@ function mountBillView(kind, initial, actions2) {
     }
   }
   function renderSummaryContent(keepControls = false) {
-    const el = document.getElementById("screen-summary");
+    const el = exportRoot ?? document.getElementById("screen-summary");
     let h = "";
     const svcDistDisabled = !model.working.service.enabled;
     const discDistDisabled = !model.working.discount.value || model.working.discount.value <= 0;
@@ -1287,6 +1294,7 @@ function mountBillView(kind, initial, actions2) {
     h += renderBillTotals(bt);
     h += `<div id="summary-export-bar"><button class="btn--full btn--export btn btn-p" id="btn-download-summary" ${model.imageExporting ? "disabled" : ""}>${MAIN_ICONS.download} บันทึกสรุปยอดเป็นรูปภาพ</button></div>`;
     setSummaryContent(el, controls2, h, keepControls);
+    if (exportRoot) return;
     el.querySelectorAll('[data-a="person-menus"]').forEach((node) => actions2.bindBillAction(node, () => actions2.personMenus(node.dataset.pid)));
     el.querySelectorAll('[data-a="toggle-coll"]').forEach((node) => node.addEventListener("click", () => actions2.toggleCollapsed(node.dataset.pid)));
     const expand = el.querySelector("#btn-expand-all"), collapse = el.querySelector("#btn-collapse-all");
@@ -1337,6 +1345,10 @@ function mountBillView(kind, initial, actions2) {
     const bar = document.getElementById("summary-export-bar");
     document.getElementById("app-footer").style.display = bar ? "none" : "";
     bottomCleanup = reserveBottomAction(bar);
+  }
+  if (exportRoot) {
+    renderSummaryContent();
+    return;
   }
   update(initial);
   return {
@@ -2817,50 +2829,6 @@ function createMainRecovery({
   };
 }
 
-// src/ui-theme.mjs
-var colorRoles = {
-  background: "--color-background",
-  surface: "--color-surface",
-  card: "--color-card",
-  emphasis: "--color-orange-on-light",
-  text: "--color-text",
-  muted: "--color-text-muted",
-  subdued: "--color-text-subdued",
-  border: "--color-border",
-  success: "--color-success",
-  danger: "--color-danger",
-  accentWash: "--color-accent-export-wash",
-  sectionLabel: "--section-label-color"
-};
-function readUiTheme(root = document.documentElement) {
-  const document2 = root.ownerDocument;
-  const window2 = document2.defaultView;
-  const style = window2.getComputedStyle(root);
-  function required(token) {
-    const value = style.getPropertyValue(token).trim();
-    if (!value) throw Error("ไม่พบค่าธีม " + token);
-    return value;
-  }
-  const colors = {};
-  const fonts = Object.fromEntries(["body", "mono", "heading", "brand"].map(
-    (role) => [role, required("--font-" + role)]
-  ));
-  const probe = document2.createElement("span");
-  probe.hidden = true;
-  root.append(probe);
-  try {
-    for (const [role, token] of Object.entries(colorRoles)) {
-      const value = required(token);
-      if (!window2.CSS.supports("color", value)) throw Error("ค่าสีธีมไม่ถูกต้อง " + token);
-      probe.style.color = value;
-      colors[role] = window2.getComputedStyle(probe).color;
-    }
-  } finally {
-    probe.remove();
-  }
-  return { colors, fonts };
-}
-
 // src/bill-operations.mjs
 var copy2 = (value) => structuredClone(value);
 function isEmptyBillContent(bill) {
@@ -3368,226 +3336,165 @@ function validateApprovedBackup(raw) {
   return decodeBillFile(raw).bill;
 }
 
+// src/ui-theme.mjs
+var colorRoles = {
+  background: "--color-background",
+  surface: "--color-surface",
+  card: "--color-card",
+  emphasis: "--color-orange-on-light",
+  text: "--color-text",
+  muted: "--color-text-muted",
+  subdued: "--color-text-subdued",
+  border: "--color-border",
+  success: "--color-success",
+  danger: "--color-danger",
+  accentWash: "--color-accent-export-wash",
+  sectionLabel: "--section-label-color"
+};
+function readUiTheme(root = document.documentElement) {
+  const document2 = root.ownerDocument;
+  const window2 = document2.defaultView;
+  const style = window2.getComputedStyle(root);
+  function required(token) {
+    const value = style.getPropertyValue(token).trim();
+    if (!value) throw Error("ไม่พบค่าธีม " + token);
+    return value;
+  }
+  const colors = {};
+  const fonts = Object.fromEntries(["body", "mono", "heading", "brand"].map(
+    (role) => [role, required("--font-" + role)]
+  ));
+  const probe = document2.createElement("span");
+  probe.hidden = true;
+  root.append(probe);
+  try {
+    for (const [role, token] of Object.entries(colorRoles)) {
+      const value = required(token);
+      if (!window2.CSS.supports("color", value)) throw Error("ค่าสีธีมไม่ถูกต้อง " + token);
+      probe.style.color = value;
+      colors[role] = window2.getComputedStyle(probe).color;
+    }
+  } finally {
+    probe.remove();
+  }
+  return { colors, fonts };
+}
+
 // src/summary-image.mjs
-async function downloadSummaryImage(capture, toast2) {
-  const state = approvedState(capture.bill);
-  const totals = approvedBillTotals(state, capture.bill);
-  const hasPersonWarning = (pid) => getPersonWarning(pid, state, totals);
-  const itemShares = (item) => approvedShares(item);
-  if (!totals || !state.people.length) {
+async function inlineStyles(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw Error("โหลดรูปแบบภาพไม่สำเร็จ");
+  let css = await response.text();
+  const imports = [...css.matchAll(/@import\s+url\(["']?([^"')]+)["']?\);/g)];
+  for (const match of imports) {
+    let imported = "";
+    try {
+      imported = await inlineStyles(new URL(match[1], url));
+    } catch (error) {
+      if (new URL(match[1], url).origin === location.origin) throw error;
+    }
+    css = css.replace(match[0], () => imported);
+  }
+  const urls = [...new Set([...css.matchAll(/url\(["']?([^"')]+)["']?\)/g)].map((m) => m[1]).filter((value) => !value.startsWith("data:")))];
+  await Promise.all(urls.map(async (value) => {
+    const resource = await fetch(new URL(value, url));
+    if (!resource.ok) throw Error("โหลดแบบอักษรไม่สำเร็จ");
+    const blob = await resource.blob();
+    const data = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+    css = css.split(value).join(data);
+  }));
+  return css;
+}
+async function downloadSummaryImage(capture, toast2, model) {
+  if (!model?.working.people.length) {
     toast2("ยังไม่มีข้อมูลสรุป");
     return;
   }
-  await document.fonts.ready;
+  const snapshot2 = structuredClone(model), name = capture.name;
   const { colors, fonts } = readUiTheme();
-  const billTitleFont = `600 18px ${fonts.body.replace(/,\s*sans-serif$/, "")}`;
-  const DPR = Math.min(window.devicePixelRatio || 2, 3);
-  const CW = 800, PAD = 32, CP = 20, GAP = 10, LH = 28, ILH = 25, CR = 12, FTR_H = 64, SLH = 36;
-  const titleCanvas = document.createElement("canvas"), titleCtx = titleCanvas.getContext("2d");
-  titleCtx.font = billTitleFont;
-  const titleLines = [];
-  let titleLine = "";
-  for (const character of capture.name) {
-    if (titleCtx.measureText(titleLine + character).width > CW - PAD * 2 && titleLine) {
-      titleLines.push(titleLine);
-      titleLine = "";
-    }
-    titleLine += character;
-  }
-  titleLines.push(titleLine);
-  const HDR_H = 90 + titleLines.length * 28;
-  const INNER = CW - PAD * 2;
-  function personCardHeight(p) {
-    const items = state.items.filter((it) => it.assignments.some((a) => a.personId === p.id));
-    let h = CP * 2 + 44;
-    if (items.length) {
-      h += 8 + items.length * ILH + 12 + LH;
-      if (state.service.enabled) h += LH;
-      if (state.tax.enabled) h += LH;
-      if (totals.D > 0) h += LH;
-      h += 8 + 44;
-    } else h += LH;
-    return h;
-  }
-  function billCardHeight() {
-    let h = CP * 2 + LH;
-    if (state.service.enabled) h += LH;
-    if (state.tax.enabled) h += LH;
-    if (totals.D > 0) h += LH;
-    return h += 8 + 44;
-  }
-  let TH = HDR_H + PAD + SLH;
-  state.people.forEach((p) => {
-    if (totals.pt[p.id]) TH += personCardHeight(p) + GAP;
+  const root = document.createElement("div");
+  root.className = "summary-image-root";
+  root.inert = true;
+  const style = getComputedStyle(document.documentElement);
+  for (const key of style) if (key.startsWith("--")) root.style.setProperty(key, style.getPropertyValue(key));
+  Object.assign(root.style, {
+    width: "800px",
+    padding: "24px",
+    boxSizing: "border-box",
+    font: "400 14px " + fonts.body,
+    color: colors.text,
+    background: "var(--surface-canvas)",
+    position: "absolute",
+    left: "-10000px",
+    top: "0"
   });
-  TH += 16 + SLH + billCardHeight() + GAP + PAD + FTR_H;
-  const canvas = document.createElement("canvas");
-  canvas.width = CW * DPR;
-  canvas.height = TH * DPR;
-  const ctx = canvas.getContext("2d");
-  ctx.scale(DPR, DPR);
-  function drawRoundedRect(x, y2, w, h, r) {
-    const rs = typeof r === "number" ? [r, r, r, r] : r;
-    const [tl, tr, br, bl] = rs;
-    ctx.beginPath();
-    ctx.moveTo(x + tl, y2);
-    ctx.lineTo(x + w - tr, y2);
-    ctx.quadraticCurveTo(x + w, y2, x + w, y2 + tr);
-    ctx.lineTo(x + w, y2 + h - br);
-    ctx.quadraticCurveTo(x + w, y2 + h, x + w - br, y2 + h);
-    ctx.lineTo(x + bl, y2 + h);
-    ctx.quadraticCurveTo(x, y2 + h, x, y2 + h - bl);
-    ctx.lineTo(x, y2 + tl);
-    ctx.quadraticCurveTo(x, y2, x + tl, y2);
-    ctx.closePath();
+  const brand = document.createElement("div");
+  brand.textContent = "หารจ่าย แฟร์ๆ";
+  brand.style.font = "700 24px " + fonts.brand;
+  const title = document.createElement("h2");
+  title.textContent = name;
+  title.style.overflowWrap = "anywhere";
+  root.append(brand, title);
+  const content2 = document.createElement("div");
+  root.append(content2);
+  document.body.append(root);
+  try {
+    await document.fonts.ready;
+    renderSummaryImageContent(snapshot2, content2);
+    content2.querySelectorAll(".dist-bar-row,.section-start,.coll-btns,.person-card-actions,.coll-chev,.btn-icon,#summary-export-bar").forEach((node) => node.remove());
+    for (const node of content2.querySelectorAll(".per-person-sticky")) Object.assign(node.style, { position: "static", background: "transparent" });
+    const heading = content2.querySelector(".per-person-sticky");
+    if (heading) heading.style.marginTop = "0";
+    const footer = document.createElement("p");
+    footer.textContent = "UX Design by Map Tharit Banchanurat";
+    footer.style.textAlign = "center";
+    footer.style.color = colors.subdued;
+    root.append(footer);
+    const date = document.createElement("div");
+    date.textContent = (/* @__PURE__ */ new Date()).toLocaleString("th-TH");
+    footer.prepend(date);
+    const height = Math.ceil(root.getBoundingClientRect().height);
+    const sheets = [...document.querySelectorAll("link[rel=stylesheet]")];
+    const css = (await Promise.all(sheets.map((link) => inlineStyles(link.href)))).join("\n");
+    const clone5 = root.cloneNode(true);
+    Object.assign(clone5.style, { position: "relative", left: "0", top: "0" });
+    clone5.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+    const embedded = document.createElement("style");
+    embedded.textContent = css;
+    clone5.prepend(embedded);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="' + height + '"><foreignObject width="100%" height="100%">' + new XMLSerializer().serializeToString(clone5) + "</foreignObject></svg>";
+    const imageUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(Error("สร้างภาพสรุปไม่สำเร็จ"));
+      image.src = imageUrl;
+    });
+    const scale = Math.min(window.devicePixelRatio || 2, 3);
+    const canvas = document.createElement("canvas");
+    canvas.width = 800 * scale;
+    canvas.height = height * scale;
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+    if (!blob) throw Error("สร้างรูปภาพไม่ได้ ลองดาวน์โหลดอีกครั้ง");
+    const url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url;
+    a.download = billFilename(name, "jpg");
+    document.body.append(a);
+    a.click();
+    setTimeout(() => {
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, 1e3);
+    toast2("เริ่มดาวน์โหลดแล้ว");
+  } finally {
+    root.remove();
   }
-  function drawLine(yy, x1 = PAD + CP, x2 = CW - PAD - CP) {
-    ctx.strokeStyle = colors.border;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x1, yy);
-    ctx.lineTo(x2, yy);
-    ctx.stroke();
-  }
-  function drawText(text2, x, yy, font, color, align = "left") {
-    ctx.font = font;
-    ctx.fillStyle = color;
-    ctx.textAlign = align;
-    ctx.fillText(text2, x, yy);
-    ctx.textAlign = "left";
-  }
-  function truncateText(text2, maxW) {
-    if (ctx.measureText(text2).width <= maxW) return text2;
-    let s = text2;
-    while (s.length > 1 && ctx.measureText(s + "…").width > maxW) s = s.slice(0, -1);
-    return s + "…";
-  }
-  function drawBillRow(lbl, val, y2, vc, fontSize, yOff) {
-    drawText(lbl, PAD + CP, y2 + LH - yOff, `400 ${fontSize} ${fonts.body}`, colors.muted);
-    drawText(val, CW - PAD - CP, y2 + LH - yOff, `500 ${fontSize} ${fonts.body}`, vc, "right");
-    return y2 + LH;
-  }
-  ctx.fillStyle = colors.background;
-  ctx.fillRect(0, 0, CW, TH);
-  ctx.fillStyle = colors.surface;
-  ctx.fillRect(0, 0, CW, HDR_H);
-  drawLine(HDR_H, 0, CW);
-  ctx.font = `400 18px ${fonts.heading}`;
-  ctx.fillStyle = colors.muted;
-  ctx.fillText("หารจ่าย", PAD, 56);
-  const preW = ctx.measureText("หารจ่าย").width;
-  drawText("แฟร์ๆ", PAD + preW + 5, 60, `800 36px ${fonts.brand}`, colors.emphasis);
-  const now = /* @__PURE__ */ new Date();
-  const dStr = now.toLocaleDateString("th-TH", {
-    year: "numeric",
-    month: "long",
-    day: "numeric"
-  }) + " " + now.toLocaleTimeString("th-TH", {
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-  drawText(dStr, CW - PAD, 56, `400 12px ${fonts.body}`, colors.subdued, "right");
-  titleLines.forEach((line, index) => drawText(line, PAD, 96 + index * 28, billTitleFont, colors.text));
-  let y = HDR_H + PAD;
-  drawText("ยอดรวมรายคน", PAD, y + 20, `700 11px ${fonts.body}`, colors.sectionLabel);
-  y += SLH;
-  state.people.forEach((p) => {
-    const pt = totals.pt[p.id];
-    if (!pt) return;
-    const items = state.items.filter((it) => it.assignments.some((a) => a.personId === p.id));
-    const cH = personCardHeight(p);
-    const neg = pt.total < 0;
-    const hw = hasPersonWarning(p.id);
-    drawRoundedRect(PAD, y, INNER, cH, CR);
-    ctx.fillStyle = colors.card;
-    ctx.fill();
-    drawRoundedRect(PAD, y, INNER, cH, CR);
-    ctx.strokeStyle = colors.border;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    let cy = y + CP;
-    const pNameDisp = truncateText((hw ? "⚠ " : "") + p.name, INNER - CP * 2 - 180);
-    drawText(pNameDisp, PAD + CP, cy + 28, `700 16px ${fonts.body}`, hw ? colors.danger : colors.text);
-    drawText(fmt(pt.total), CW - PAD - CP, cy + 30, `700 20px ${fonts.body}`, neg ? colors.danger : colors.emphasis, "right");
-    cy += 44;
-    if (items.length) {
-      drawLine(cy);
-      cy += 8;
-      items.forEach((it) => {
-        const d = itemShares(it)[p.id] || {
-          amount: 0
-        };
-        const nm = truncateText(it.name || "ไม่มีชื่อเมนู", INNER - CP * 2 - 160);
-        drawText(nm, PAD + CP + 12, cy + 17, `400 13px ${fonts.body}`, colors.text);
-        drawText(fmt(d.amount), CW - PAD - CP, cy + 17, `400 13px ${fonts.body}`, colors.muted, "right");
-        cy += ILH;
-      });
-      cy += 12;
-      drawLine(cy);
-      cy = drawBillRow("ยอดรวมย่อย", fmt(pt.subtotal), cy, colors.text, "13px", 7);
-      if (state.service.enabled) cy = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(pt.service)}`, cy, colors.text, "13px", 7);
-      if (state.tax.enabled) cy = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(pt.vat)}`, cy, colors.text, "13px", 7);
-      if (totals.D > 0) cy = drawBillRow("ส่วนลด", `−${fmt(pt.discount)}`, cy, colors.success, "13px", 7);
-      cy += 8;
-      drawLine(cy);
-      drawRoundedRect(PAD, y + cH - (44 + CP), INNER, 44 + CP, [0, 0, CR, CR]);
-      ctx.fillStyle = colors.accentWash;
-      ctx.fill();
-      drawText("ยอดรวม", PAD + CP, cy + 30, `600 14px ${fonts.body}`, colors.muted);
-      drawText(fmt(pt.total), CW - PAD - CP, cy + 32, `700 20px ${fonts.body}`, neg ? colors.danger : colors.emphasis, "right");
-    } else {
-      drawText("⚠ ยังไม่ได้เลือกเมนูใด", PAD + CP, cy + 22, `400 13px ${fonts.body}`, colors.danger);
-    }
-    y += cH + GAP;
-  });
-  y += 16;
-  drawText("ยอดรวมบิล", PAD, y + 20, `700 11px ${fonts.body}`, colors.sectionLabel);
-  y += SLH;
-  const bcH = billCardHeight();
-  drawRoundedRect(PAD, y, INNER, bcH, CR);
-  ctx.fillStyle = colors.card;
-  ctx.fill();
-  drawRoundedRect(PAD, y, INNER, bcH, CR);
-  ctx.strokeStyle = colors.border;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  let by = y + CP;
-  by = drawBillRow("ยอดรวมย่อย", fmt(totals.Sb), by, colors.text, "14px", 6);
-  if (state.service.enabled) by = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(totals.svcAmt)}`, by, colors.text, "14px", 6);
-  if (state.tax.enabled) by = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(totals.vatAmt)}`, by, colors.text, "14px", 6);
-  if (totals.D > 0) by = drawBillRow("ส่วนลด", `−${fmt(totals.D)}`, by, colors.success, "14px", 6);
-  by += 8;
-  drawLine(by);
-  drawRoundedRect(PAD, y + bcH - (44 + CP), INNER, 44 + CP, [0, 0, CR, CR]);
-  ctx.fillStyle = colors.accentWash;
-  ctx.fill();
-  drawText("ยอดที่ต้องจ่าย", PAD + CP, by + 30, `600 14px ${fonts.body}`, colors.muted);
-  drawText(fmt(totals.grand), CW - PAD - CP, by + 34, `700 22px ${fonts.body}`, colors.emphasis, "right");
-  y += bcH + PAD;
-  drawText("หารจ่าย แฟร์ๆ", CW / 2, y + 22, `600 13px ${fonts.body}`, colors.subdued, "center");
-  drawText("UX Design by Map Tharit Banchanurat", CW / 2, y + 40, `400 11px ${fonts.body}`, colors.subdued, "center");
-  await new Promise((resolve) => canvas.toBlob((blob) => {
-    try {
-      if (!blob) {
-        toast2("สร้างรูปภาพไม่ได้ ลองดาวน์โหลดอีกครั้ง");
-        return;
-      }
-      const url = URL.createObjectURL(blob), a = document.createElement("a");
-      a.href = url;
-      a.download = billFilename(capture.name, "jpg");
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        a.remove();
-        URL.revokeObjectURL(url);
-      }, 1e3);
-      toast2("เริ่มดาวน์โหลดแล้ว");
-    } catch (error) {
-      toast2("เริ่มดาวน์โหลดไม่ได้ ลองอีกครั้ง: " + error.message);
-    } finally {
-      resolve();
-    }
-  }, "image/jpeg", 0.92));
 }
 
 // src/interaction-busy.mjs
@@ -5629,7 +5536,7 @@ function startSummaryImage() {
   imageExporting = true;
   const button2 = document.getElementById("btn-download-summary");
   if (button2) button2.disabled = true;
-  downloadSummaryImage(activeSession().record, toast).catch((error) => toast("สร้างรูปภาพไม่ได้ ลองอีกครั้ง: " + error.message)).finally(() => {
+  downloadSummaryImage(activeSession().record, toast, billRenderModel()).catch((error) => toast("สร้างรูปภาพไม่ได้ ลองอีกครั้ง: " + error.message)).finally(() => {
     imageExporting = false;
     if (!billState().saving) {
       const current = document.getElementById("btn-download-summary");

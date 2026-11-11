@@ -369,7 +369,7 @@ let imageExporting=false;
 function startSummaryImage(){
   if(billState().pendingCandidate||billState().saving){toast('บันทึกการแก้ไขก่อนดาวน์โหลด');return;}
   if(imageExporting)return;imageExporting=true;const button=document.getElementById('btn-download-summary');if(button)button.disabled=true;
-  downloadSummaryImage(activeSession().record,toast).catch(error=>toast('สร้างรูปภาพไม่ได้ ลองอีกครั้ง: '+error.message)).finally(()=>{imageExporting=false;if(!billState().saving){const current=document.getElementById('btn-download-summary');if(current)current.disabled=false;}});
+  downloadSummaryImage(activeSession().record,toast,billRenderModel()).catch(error=>toast('สร้างรูปภาพไม่ได้ ลองอีกครั้ง: '+error.message)).finally(()=>{imageExporting=false;if(!billState().saving){const current=document.getElementById('btn-download-summary');if(current)current.disabled=false;}});
 }
 // ─── 8. RENDER FUNCTIONS ──────────────────────────────────────────────────────
 

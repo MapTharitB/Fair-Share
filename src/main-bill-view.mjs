@@ -13,7 +13,10 @@ function bodyMeasureFont(size){
 /** Read-only projection plus named actions; views have no storage/session access. */
 export function mountMenu(initial,actions){return mountBillView('menu',initial,actions);}
 export function mountSummary(initial,actions){return mountBillView('summary',initial,actions);}
-function mountBillView(kind,initial,actions){
+export function renderSummaryImageContent(model,root){
+  mountBillView('summary',{...model,collapsed:[]},null,root);
+}
+function mountBillView(kind,initial,actions,exportRoot=null){
   let model=initial,collapsed=new Set(model.collapsed),distributionCleanup=()=>{},stickyCleanup=()=>{},bottomCleanup=()=>{};
   const {measure:measureTW,clear:clearTextWidths}=createTextMeasurer();
 
@@ -111,11 +114,12 @@ function renderMenuContent(){
   el.querySelectorAll('[data-dm]').forEach(node=>actions.bindBillAction(node,()=>actions.discountMode(node.dataset.dm)));
 }
 function setSummaryContent(el,controls,details,keepControls){
+  if(exportRoot){el.innerHTML=controls+details;return;}
   if(keepControls){const bar=el.querySelector('#summary-export-bar');el.querySelector('#summary-details').innerHTML=details;if(bar)el.querySelector('#summary-export-bar')?.replaceWith(bar);}
   else{distributionCleanup();el.innerHTML=controls+`<div id="summary-details" class="summary-details">${details}</div>`;attachDistHandlers(el);distributionCleanup=observeChoices(el.querySelector('.dist-bar-row'),layoutDistribution);}
 }
 function renderSummaryContent(keepControls=false){
-  const el=document.getElementById('screen-summary');let h='';
+  const el=exportRoot??document.getElementById('screen-summary');let h='';
   const svcDistDisabled=!model.working.service.enabled;const discDistDisabled=!model.working.discount.value||model.working.discount.value<=0;
   const containerW=el.clientWidth||window.innerWidth;
   h+=`<div class="section-start shdr"><span class="stitle">วิธีการแบ่ง</span></div><div class="dist-bar-row">`;
@@ -173,6 +177,7 @@ function renderSummaryContent(keepControls=false){
   h+=renderBillTotals(bt);
   h+=`<div id="summary-export-bar"><button class="btn--full btn--export btn btn-p" id="btn-download-summary" ${model.imageExporting?'disabled':''}>${ICONS.download} บันทึกสรุปยอดเป็นรูปภาพ</button></div>`;
   setSummaryContent(el,controls,h,keepControls);
+  if(exportRoot)return;
   el.querySelectorAll('[data-a="person-menus"]').forEach(node=>actions.bindBillAction(node,()=>actions.personMenus(node.dataset.pid)));
   el.querySelectorAll('[data-a="toggle-coll"]').forEach(node=>node.addEventListener('click',()=>actions.toggleCollapsed(node.dataset.pid)));
   const expand=el.querySelector('#btn-expand-all'),collapse=el.querySelector('#btn-collapse-all');
@@ -207,6 +212,7 @@ function attachDistHandlers(el){
     const bar=document.getElementById('summary-export-bar');document.getElementById('app-footer').style.display=bar?'none':'';
     bottomCleanup=reserveBottomAction(bar);
   }
+  if(exportRoot){renderSummaryContent();return;}
   update(initial);
   return {update,layout(){if(kind==='menu'){layoutAdjustments(document.querySelector('#screen-menu .adj-bar-row'));updatePeoplePreview();}else layoutDistribution();},
     dispose(){distributionCleanup();stickyCleanup();bottomCleanup();clearTextWidths();document.getElementById('screen-'+kind).replaceChildren();}};

@@ -1,235 +1,83 @@
-import { readUiTheme } from './ui-theme.mjs';
-import { approvedState, approvedBillTotals, approvedShares } from './approved-ui-bridge.mjs';
-import { fmt, displayRate } from './bill-display.mjs';
-import { getPersonWarning } from './bill-warnings.mjs';
-import { billFilename } from './backup-file.mjs';
-export async function downloadSummaryImage(capture, toast) {
-  const state = approvedState(capture.bill);
-  const totals = approvedBillTotals(state, capture.bill);
-  const hasPersonWarning = pid => getPersonWarning(pid, state, totals);
-  const itemShares = item => approvedShares(item);
-  if (!totals || !state.people.length) {
-    toast('ยังไม่มีข้อมูลสรุป');
-    return;
-  }
-  await document.fonts.ready;
-  const {colors, fonts} = readUiTheme();
-  const billTitleFont = `600 18px ${fonts.body.replace(/,\s*sans-serif$/, "")}`;
-  const DPR = Math.min(window.devicePixelRatio || 2, 3);
-  const CW = 800,
-    PAD = 32,
-    CP = 20,
-    GAP = 10,
-    LH = 28,
-    ILH = 25,
-    CR = 12,
-    FTR_H = 64,
-    SLH = 36;
-  const titleCanvas = document.createElement('canvas'),
-    titleCtx = titleCanvas.getContext('2d');
-  titleCtx.font = billTitleFont;
-  const titleLines = [];
-  let titleLine = '';
-  for (const character of capture.name) {
-    if (titleCtx.measureText(titleLine + character).width > CW - PAD * 2 && titleLine) {
-      titleLines.push(titleLine);
-      titleLine = '';
+import {renderSummaryImageContent} from './main-bill-view.mjs';
+import {billFilename} from './backup-file.mjs';
+import {readUiTheme} from './ui-theme.mjs';
+
+async function inlineStyles(url){
+  const response=await fetch(url);
+  if(!response.ok)throw Error('โหลดรูปแบบภาพไม่สำเร็จ');
+  let css=await response.text();
+  const imports=[...css.matchAll(/@import\s+url\(["']?([^"')]+)["']?\);/g)];
+  for(const match of imports){
+    let imported='';
+    try{imported=await inlineStyles(new URL(match[1],url));}
+    catch(error){
+      // Match the page's system font fallback when a remote font is unavailable.
+      if(new URL(match[1],url).origin===location.origin)throw error;
     }
-    titleLine += character;
+    css=css.replace(match[0],()=>imported);
   }
-  titleLines.push(titleLine);
-  const HDR_H = 90 + titleLines.length * 28;
-  const INNER = CW - PAD * 2;
-  function personCardHeight(p) {
-    const items = state.items.filter(it => it.assignments.some(a => a.personId === p.id));
-    let h = CP * 2 + 44;
-    if (items.length) {
-      h += 8 + items.length * ILH + 12 + LH;
-      if (state.service.enabled) h += LH;
-      if (state.tax.enabled) h += LH;
-      if (totals.D > 0) h += LH;
-      h += 8 + 44;
-    } else h += LH;
-    return h;
-  }
-  function billCardHeight() {
-    let h = CP * 2 + LH;
-    if (state.service.enabled) h += LH;
-    if (state.tax.enabled) h += LH;
-    if (totals.D > 0) h += LH;
-    return h += 8 + 44;
-  }
-  let TH = HDR_H + PAD + SLH;
-  state.people.forEach(p => {
-    if (totals.pt[p.id]) TH += personCardHeight(p) + GAP;
-  });
-  TH += 16 + SLH + billCardHeight() + GAP + PAD + FTR_H;
-  const canvas = document.createElement('canvas');
-  canvas.width = CW * DPR;
-  canvas.height = TH * DPR;
-  const ctx = canvas.getContext('2d');
-  ctx.scale(DPR, DPR);
-  function drawRoundedRect(x, y, w, h, r) {
-    const rs = typeof r === 'number' ? [r, r, r, r] : r;
-    const [tl, tr, br, bl] = rs;
-    ctx.beginPath();
-    ctx.moveTo(x + tl, y);
-    ctx.lineTo(x + w - tr, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + tr);
-    ctx.lineTo(x + w, y + h - br);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - br, y + h);
-    ctx.lineTo(x + bl, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - bl);
-    ctx.lineTo(x, y + tl);
-    ctx.quadraticCurveTo(x, y, x + tl, y);
-    ctx.closePath();
-  }
-  function drawLine(yy, x1 = PAD + CP, x2 = CW - PAD - CP) {
-    ctx.strokeStyle = colors.border;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x1, yy);
-    ctx.lineTo(x2, yy);
-    ctx.stroke();
-  }
-  function drawText(text, x, yy, font, color, align = 'left') {
-    ctx.font = font;
-    ctx.fillStyle = color;
-    ctx.textAlign = align;
-    ctx.fillText(text, x, yy);
-    ctx.textAlign = 'left';
-  }
-  function truncateText(text, maxW) {
-    if (ctx.measureText(text).width <= maxW) return text;
-    let s = text;
-    while (s.length > 1 && ctx.measureText(s + '…').width > maxW) s = s.slice(0, -1);
-    return s + '…';
-  }
-  function drawBillRow(lbl, val, y, vc, fontSize, yOff) {
-    drawText(lbl, PAD + CP, y + LH - yOff, `400 ${fontSize} ${fonts.body}`, colors.muted);
-    drawText(val, CW - PAD - CP, y + LH - yOff, `500 ${fontSize} ${fonts.body}`, vc, 'right');
-    return y + LH;
-  }
-  ctx.fillStyle = colors.background;
-  ctx.fillRect(0, 0, CW, TH);
-  ctx.fillStyle = colors.surface;
-  ctx.fillRect(0, 0, CW, HDR_H);
-  drawLine(HDR_H, 0, CW);
-  ctx.font = `400 18px ${fonts.heading}`;
-  ctx.fillStyle = colors.muted;
-  ctx.fillText('หารจ่าย', PAD, 56);
-  const preW = ctx.measureText('หารจ่าย').width;
-  drawText('แฟร์ๆ', PAD + preW + 5, 60, `800 36px ${fonts.brand}`, colors.emphasis);
-  const now = new Date();
-  const dStr = now.toLocaleDateString('th-TH', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  }) + ' ' + now.toLocaleTimeString('th-TH', {
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-  drawText(dStr, CW - PAD, 56, `400 12px ${fonts.body}`, colors.subdued, 'right');
-  titleLines.forEach((line, index) => drawText(line, PAD, 96 + index * 28, billTitleFont, colors.text));
-  let y = HDR_H + PAD;
-  drawText('ยอดรวมรายคน', PAD, y + 20, `700 11px ${fonts.body}`, colors.sectionLabel);
-  y += SLH;
-  state.people.forEach(p => {
-    const pt = totals.pt[p.id];
-    if (!pt) return;
-    const items = state.items.filter(it => it.assignments.some(a => a.personId === p.id));
-    const cH = personCardHeight(p);
-    const neg = pt.total < 0;
-    const hw = hasPersonWarning(p.id);
-    drawRoundedRect(PAD, y, INNER, cH, CR);
-    ctx.fillStyle = colors.card;
-    ctx.fill();
-    drawRoundedRect(PAD, y, INNER, cH, CR);
-    ctx.strokeStyle = colors.border;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    let cy = y + CP;
-    const pNameDisp = truncateText((hw ? '⚠ ' : '') + p.name, INNER - CP * 2 - 180);
-    drawText(pNameDisp, PAD + CP, cy + 28, `700 16px ${fonts.body}`, hw ? colors.danger : colors.text);
-    drawText(fmt(pt.total), CW - PAD - CP, cy + 30, `700 20px ${fonts.body}`, neg ? colors.danger : colors.emphasis, 'right');
-    cy += 44;
-    if (items.length) {
-      drawLine(cy);
-      cy += 8;
-      items.forEach(it => {
-        const d = itemShares(it)[p.id] || {
-          amount: 0
-        };
-        const nm = truncateText(it.name || 'ไม่มีชื่อเมนู', INNER - CP * 2 - 160);
-        drawText(nm, PAD + CP + 12, cy + 17, `400 13px ${fonts.body}`, colors.text);
-        drawText(fmt(d.amount), CW - PAD - CP, cy + 17, `400 13px ${fonts.body}`, colors.muted, 'right');
-        cy += ILH;
-      });
-      cy += 12;
-      drawLine(cy);
-      cy = drawBillRow('ยอดรวมย่อย', fmt(pt.subtotal), cy, colors.text, '13px', 7);
-      if (state.service.enabled) cy = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(pt.service)}`, cy, colors.text, '13px', 7);
-      if (state.tax.enabled) cy = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(pt.vat)}`, cy, colors.text, '13px', 7);
-      if (totals.D > 0) cy = drawBillRow('ส่วนลด', `−${fmt(pt.discount)}`, cy, colors.success, '13px', 7);
-      cy += 8;
-      drawLine(cy);
-      drawRoundedRect(PAD, y + cH - (44 + CP), INNER, 44 + CP, [0, 0, CR, CR]);
-      ctx.fillStyle = colors.accentWash;
-      ctx.fill();
-      drawText('ยอดรวม', PAD + CP, cy + 30, `600 14px ${fonts.body}`, colors.muted);
-      drawText(fmt(pt.total), CW - PAD - CP, cy + 32, `700 20px ${fonts.body}`, neg ? colors.danger : colors.emphasis, 'right');
-    } else {
-      drawText('⚠ ยังไม่ได้เลือกเมนูใด', PAD + CP, cy + 22, `400 13px ${fonts.body}`, colors.danger);
-    }
-    y += cH + GAP;
-  });
-  y += 16;
-  drawText('ยอดรวมบิล', PAD, y + 20, `700 11px ${fonts.body}`, colors.sectionLabel);
-  y += SLH;
-  const bcH = billCardHeight();
-  drawRoundedRect(PAD, y, INNER, bcH, CR);
-  ctx.fillStyle = colors.card;
-  ctx.fill();
-  drawRoundedRect(PAD, y, INNER, bcH, CR);
-  ctx.strokeStyle = colors.border;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-  let by = y + CP;
-  by = drawBillRow('ยอดรวมย่อย', fmt(totals.Sb), by, colors.text, '14px', 6);
-  if (state.service.enabled) by = drawBillRow(`Service Charge (${displayRate(state.service.value)}%)`, `+${fmt(totals.svcAmt)}`, by, colors.text, '14px', 6);
-  if (state.tax.enabled) by = drawBillRow(`VAT (${displayRate(state.tax.value)}%)`, `+${fmt(totals.vatAmt)}`, by, colors.text, '14px', 6);
-  if (totals.D > 0) by = drawBillRow('ส่วนลด', `−${fmt(totals.D)}`, by, colors.success, '14px', 6);
-  by += 8;
-  drawLine(by);
-  drawRoundedRect(PAD, y + bcH - (44 + CP), INNER, 44 + CP, [0, 0, CR, CR]);
-  ctx.fillStyle = colors.accentWash;
-  ctx.fill();
-  drawText('ยอดที่ต้องจ่าย', PAD + CP, by + 30, `600 14px ${fonts.body}`, colors.muted);
-  drawText(fmt(totals.grand), CW - PAD - CP, by + 34, `700 22px ${fonts.body}`, colors.emphasis, 'right');
-  y += bcH + PAD;
-  drawText('หารจ่าย แฟร์ๆ', CW / 2, y + 22, `600 13px ${fonts.body}`, colors.subdued, 'center');
-  drawText('UX Design by Map Tharit Banchanurat', CW / 2, y + 40, `400 11px ${fonts.body}`, colors.subdued, 'center');
-  await new Promise(resolve => canvas.toBlob(blob => {
-    try {
-      if (!blob) {
-        toast('สร้างรูปภาพไม่ได้ ลองดาวน์โหลดอีกครั้ง');
-        return;
-      }
-      const url = URL.createObjectURL(blob),
-        a = document.createElement('a');
-      a.href = url;
-      a.download = billFilename(capture.name, 'jpg');
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        a.remove();
-        URL.revokeObjectURL(url);
-      }, 1000);
-      toast('เริ่มดาวน์โหลดแล้ว');
-    } catch (error) {
-      toast('เริ่มดาวน์โหลดไม่ได้ ลองอีกครั้ง: ' + error.message);
-    } finally {
-      resolve();
-    }
-  }, 'image/jpeg', 0.92));
+  const urls=[...new Set([...css.matchAll(/url\(["']?([^"')]+)["']?\)/g)].map(m=>m[1]).filter(value=>!value.startsWith('data:')))];
+  await Promise.all(urls.map(async value=>{
+    const resource=await fetch(new URL(value,url));
+    if(!resource.ok)throw Error('โหลดแบบอักษรไม่สำเร็จ');
+    const blob=await resource.blob();
+    const data=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(blob);
+    });
+    css=css.split(value).join(data);
+  }));
+  return css;
+}
+
+export async function downloadSummaryImage(capture,toast,model){
+  if(!model?.working.people.length){toast('ยังไม่มีข้อมูลสรุป');return;}
+  const snapshot=structuredClone(model),name=capture.name;
+  const {colors,fonts}=readUiTheme();
+  const root=document.createElement('div');
+  root.className='summary-image-root';
+  root.inert=true;
+  const style=getComputedStyle(document.documentElement);
+  for(const key of style)if(key.startsWith('--'))root.style.setProperty(key,style.getPropertyValue(key));
+  Object.assign(root.style,{width:'800px',padding:'24px',boxSizing:'border-box',
+    font:'400 14px '+fonts.body,color:colors.text,
+    background:'var(--surface-canvas)',position:'absolute',left:'-10000px',top:'0'});
+  const brand=document.createElement('div');brand.textContent='หารจ่าย แฟร์ๆ';
+  brand.style.font='700 24px '+fonts.brand;
+  const title=document.createElement('h2');title.textContent=name;
+  title.style.overflowWrap='anywhere';
+  root.append(brand,title);
+  const content=document.createElement('div');root.append(content);
+  document.body.append(root);
+  try{
+    await document.fonts.ready;
+    renderSummaryImageContent(snapshot,content);
+    content.querySelectorAll('.dist-bar-row,.section-start,.coll-btns,.person-card-actions,.coll-chev,.btn-icon,#summary-export-bar').forEach(node=>node.remove());
+    for(const node of content.querySelectorAll('.per-person-sticky'))Object.assign(node.style,{position:'static',background:'transparent'});
+    const heading=content.querySelector('.per-person-sticky');
+    if(heading)heading.style.marginTop='0';
+    const footer=document.createElement('p');
+    footer.textContent='UX Design by Map Tharit Banchanurat';
+    footer.style.textAlign='center';footer.style.color=colors.subdued;root.append(footer);
+    const date=document.createElement('div');date.textContent=new Date().toLocaleString('th-TH');footer.prepend(date);
+    const height=Math.ceil(root.getBoundingClientRect().height);
+    const sheets=[...document.querySelectorAll('link[rel=stylesheet]')];
+    const css=(await Promise.all(sheets.map(link=>inlineStyles(link.href)))).join('\n');
+    const clone=root.cloneNode(true);
+    Object.assign(clone.style,{position:'relative',left:'0',top:'0'});
+    clone.setAttribute('xmlns','http://www.w3.org/1999/xhtml');
+    const embedded=document.createElement('style');embedded.textContent=css;clone.prepend(embedded);
+    const svg='<svg xmlns="http://www.w3.org/2000/svg" width="800" height="'+height+'"><foreignObject width="100%" height="100%">'+new XMLSerializer().serializeToString(clone)+'</foreignObject></svg>';
+    const imageUrl='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);
+    const image=new Image();
+    await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(Error('สร้างภาพสรุปไม่สำเร็จ'));image.src=imageUrl;});
+    const scale=Math.min(window.devicePixelRatio||2,3);
+    const canvas=document.createElement('canvas');canvas.width=800*scale;canvas.height=height*scale;
+    canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.92));
+    if(!blob)throw Error('สร้างรูปภาพไม่ได้ ลองดาวน์โหลดอีกครั้ง');
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download=billFilename(name,'jpg');document.body.append(a);a.click();
+    setTimeout(()=>{a.remove();URL.revokeObjectURL(url);},1000);
+    toast('เริ่มดาวน์โหลดแล้ว');
+  }finally{root.remove();}
 }
