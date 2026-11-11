@@ -58,13 +58,16 @@
   /* Azure Glass surfaces and contextual ink. Only the canvas uses the final averaging correction. */
   --surface-canvas: linear-gradient(115deg,#51CFF8 0%,#89E4FD 43%,#59D1F8 78%,#8AE2FD 100%);
   --surface-glass: linear-gradient(120deg,#CDF2FF 0px,#B8EBFF 140px,#C3EFFF 225px,#ACE5FF 360px);
-  --glass-reflection-width: 665px;
-  --surface-glass-reflection: linear-gradient(120deg,
+  --glass-reflection-width: 475px;
+  /* At 120deg a vertical tile spans four half-widths per reflection cycle.
+     Shift it up half a tile to keep the peak at the surface's top center. */
+  --surface-glass-reflection: repeating-linear-gradient(120deg,
     transparent calc(50% - var(--glass-reflection-width)),
     #FFFFFF19 calc(50% - var(--glass-reflection-width) * .6),
     #FFFFFF68 50%,
     #FFFFFF19 calc(50% + var(--glass-reflection-width) * .6),
-    transparent calc(50% + var(--glass-reflection-width)));
+    transparent calc(50% + var(--glass-reflection-width)))
+    center calc(-2 * var(--glass-reflection-width)) / 100% calc(4 * var(--glass-reflection-width)) repeat-y;
   --surface-glass-centered-base: linear-gradient(#B8EBFF,#ACE5FF);
   --surface-glass-centered: var(--surface-glass-reflection),var(--surface-glass-centered-base);
   --surface-navy: linear-gradient(120deg,#063D7F,#041842);
@@ -172,5 +175,5 @@
 }
 
 @media(max-width:420px){
-  :root{--glass-reflection-width:350px}
+  :root{--glass-reflection-width:250px}
 }
