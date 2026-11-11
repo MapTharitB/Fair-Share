@@ -44,10 +44,6 @@ body{font-family:var(--font-receipt-body);color:var(--color-text);height:100%;ov
 .ta-card:focus-within{border-color:var(--color-accent-input-focus);}
 .receipt-ta{scrollbar-width:none}
 .receipt-ta::-webkit-scrollbar{width:0;height:0}
-.receipt-unresolved .sheet-primary{
-  --action-surface:var(--surface-raised-navy);
-  --action-rim:var(--color-history-rim);
-}
 .ta-bar{display:flex;align-items:center;justify-content:space-between;padding:var(--space-10) var(--space-14);border-bottom:var(--border-thin) solid var(--color-border);gap:var(--space-8);flex-shrink:0;}
 .ur-bar-btn{padding:var(--space-6) 44px;min-width:130px;font-size:var(--text-12);}
 .pg-results{min-height:100vh;padding:0 var(--space-14) 0;}
