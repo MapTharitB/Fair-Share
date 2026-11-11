@@ -3,8 +3,9 @@ import {esc as escapeHtml} from './bill-display.mjs';
 import {formatMoney,formatMoneyDisplay,formatPctForDisplay,renderChargeCard,renderDiscountCard,flattenHtmlTable} from './receipt-display.mjs';
 import {mountHistoryControls} from './history-controls.mjs';
 import {mountReceiptLayout,updateReceiptLayout,RECEIPT_PLACEHOLDER} from './receipt-layout.mjs';
-import {getDerivedValues} from './receipt-parser.mjs';
-import {receiptSummary as resolveSummaryState,reviewSubtotal,hasReviewItems} from './receipt-draft.mjs';
+import {receiptIssueMessage} from './receipt-fields.mjs';
+import {getDerivedValues,getReceiptDiscrepancy} from './receipt-parser.mjs';
+import {receiptSummary as resolveSummaryState,reviewSubtotal,reviewAdmission} from './receipt-draft.mjs';
 
 export function updateReceiptTextControls(raw){
   const clear=document.getElementById('clearTaBtn'),parse=document.getElementById('parseBtn');
@@ -76,16 +77,25 @@ function rowEditTarget(element,key){
   const rowId=element.closest('tr').dataset.rowId;
   return [rowId,element.dataset[key].slice(rowId.length+1)];
 }
+function currentDiscrepancyMessage(row){
+  const difference=getReceiptDiscrepancy(row);
+  return difference?`ราคาคูณจำนวนที่เลือกได้ ${formatMoney(difference.calculatedCents/100)} ไม่ตรงกับยอด ${formatMoney(difference.printedCents/100)} ในใบเสร็จ`:'';
+}
 
 function renderPriceCell(state,row,colLabel) {
-  const {unitPrice,lineTotal}=getDerivedValues(row);
+  const derived=getDerivedValues(row);
+  const printed=!row.priceEdited&&row.evidence?.unitCents!==null&&row.evidence?.totalCents!==null;
+  const unitPrice=printed?row.evidence.unitCents/100:derived.unitPrice;
+  const lineTotal=printed?row.evidence.totalCents/100:derived.lineTotal;
   const isCanonical=colLabel===row.priceSource;
   const roleClass=isCanonical?"td-canonical td-price-source":"td-derived";
   const value=colLabel==="unit_price"?unitPrice:lineTotal;
+  const printedDescription=`ราคาในใบเสร็จ ${row.evidence?.unitCents==null?'ยังไม่ทราบ':formatMoney(row.evidence.unitCents/100)} ยอดรวมในใบเสร็จ ${row.evidence?.totalCents==null?'ยังไม่ทราบ':formatMoney(row.evidence.totalCents/100)}`;
+  const description=`${row.rawLine??''} ${printedDescription} ${row.priceEdited?'ราคาที่แก้ไขและค่าคำนวณ':printed?'ราคาที่พิมพ์ในใบเสร็จ':isCanonical?'ราคาที่เลือก':'ราคาที่คำนวณ'} จำนวนที่เลือก ${row.qty??'ยังไม่ทราบ'} ${currentDiscrepancyMessage(row)}`;
   const field=`${escapeHtml(row.id)}:${colLabel}`;
   const editing=state.editing?.rowId===row.id&&state.editing.field===colLabel;
   if(editing){
-    return `<td class="cell-with-overlay ${roleClass}"><input class="ci price" data-edit-input="${field}" value="${formatMoney(value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`;
+    return `<td class="cell-with-overlay ${roleClass}"><input class="ci price" data-edit-input="${field}" aria-label="${colLabel==='unit_price'?'ราคา':'ยอดรวม'} ${escapeHtml(row.itemName)}" value="${escapeHtml(row.issues?.price?.editField===colLabel&&row.issues.price.input!==null?row.issues.price.input:value===null?'':formatMoney(value))}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`;
   }
   const isRightCol=state.colOrder[1]===colLabel;
   const swapOverlay=isRightCol&&!row.isDiscount?`<button class="swap-position swap-row-btn" data-swap-row="${escapeHtml(row.id)}" title="สลับราคาแถวนี้">${SWAP_ICON_ROW}</button>`:"";
@@ -93,7 +103,7 @@ function renderPriceCell(state,row,colLabel) {
   const discount=isCanonical&&row.isDiscount?" td-discount":"";
   const display=formatMoneyDisplay(value);
   const content=isRightCol?`<span data-p2-num class="p2-num">${display}</span>`:display;
-  return `<td class="${roleClass}${discount}${column}" data-edit-cell="${field}">${swapOverlay}${content}</td>`;
+  return `<td class="${roleClass}${discount}${column}" tabindex="0" role="button" aria-label="${colLabel==='unit_price'?'ราคา':'ยอดรวม'} ${escapeHtml(row.itemName)}" aria-description="${escapeHtml(description)}" data-edit-cell="${field}">${swapOverlay}${content}</td>`;
 }
 
 export function renderInput(model,actions) {
@@ -149,9 +159,29 @@ export function renderInput(model,actions) {
 
 export function renderReview(model,actions) {
   const app=document.getElementById("app"),state=model;
-  let _summaryCardFocusing=false;
+  let summaryFocusTarget=null;
+
   const subtotal = reviewSubtotal(state);
+  const admission=reviewAdmission(state);
   const summaryView = resolveSummaryState(subtotal,state.summarySource,state.summaryEdits,state.discountCanonical);
+  const foodUnknown=state.rows.some(r=>!r.isDiscount&&(r.qty===null||r.priceValue===null||Object.keys(r.issues??{}).length));
+  const pending=Object.keys(state.summaryIssues??{});
+
+  const showMoney=formatMoneyDisplay;
+  for(const kind of ['service_charge','vat','discount']){
+    const v=summaryView[kind],issue=state.summaryIssues?.[kind];v.issue=issue;
+    const fixed=kind==='discount'?state.discountCanonical==='amount':v.source?.mode==='amount';
+    const active=!!v.source||v.amount>0||v.rate>0;
+    if(issue||foodUnknown&&active&&!fixed||kind==='vat'&&pending.includes('service_charge')||kind==='discount'&&pending.some(k=>k!=='discount'))v.amount=null;
+    if(issue||foodUnknown&&active&&fixed)v.rate=null;
+  }
+  const previewEdits={...state.summaryEdits},previewSources={...state.summarySource};
+  for(const kind of pending){
+    previewSources[kind]=null;
+    previewEdits[kind+'_rate']=0;
+    if(kind==='discount')previewEdits.discount_amount=0;
+  }
+  const previewTotal=resolveSummaryState(subtotal,previewSources,previewEdits,state.discountCanonical).total;
   const showSC   = summaryView.service_charge.amount>0||summaryView.service_charge.rate>0;
   const showVAT  = summaryView.vat.amount>0||summaryView.vat.rate>0;
   const showDisc = summaryView.discount.amount>0;
@@ -163,8 +193,8 @@ export function renderReview(model,actions) {
     const nameEditing=state.editing?.rowId===row.id&&state.editing?.field==="itemName";
     const qtyEditing =state.editing?.rowId===row.id&&state.editing?.field==="qty";
     const discTypeBadge=row.isDiscount&&row.discountType?`<span class="badge-discount-type badge">${row.discountType==="percent"?"%":"฿"}</span>`:"";
-    const nameCell=nameEditing?`<td class="td-canonical"><input class="ci name" data-edit-input="${escapeHtml(row.id)}:itemName" value="${escapeHtml(row.itemName)}" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`:`<td class="td-name td-canonical" data-edit-cell="${escapeHtml(row.id)}:itemName">${escapeHtml(row.itemName)}${row.isDiscount?'<span class="badge badge-d">disc</span>':""}${discTypeBadge}${row.needsReview&&!row.isDiscount?'<span class="badge badge-r">?</span>':""}${row.flags?.length>0?`<span class="badge badge-w" title="${escapeHtml((row.flags||[]).map(f=>f.msg||f.type).join(" / "))}">!</span>`:""}</td>`;
-    const qtyCell=qtyEditing?`<td class="td-quantity td-canonical"><input class="ci qty" data-edit-input="${escapeHtml(row.id)}:qty" value="${row.qty}" inputmode="numeric" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`:`<td class="td-quantity td-canonical" data-edit-cell="${escapeHtml(row.id)}:qty"><span>${row.qty}</span></td>`;
+    const nameCell=nameEditing?`<td class="td-canonical"><input class="ci name" data-edit-input="${escapeHtml(row.id)}:itemName" value="${escapeHtml(row.itemName)}" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`:`<td class="td-name td-canonical" tabindex="0" role="button" aria-label="ชื่อเมนู ${escapeHtml(row.itemName)}" data-edit-cell="${escapeHtml(row.id)}:itemName">${escapeHtml(row.itemName)}${row.isDiscount?'<span class="badge badge-d">disc</span>':""}${discTypeBadge}${(row.needsReview||Object.keys(row.issues??{}).length)&&!row.isDiscount?'<span class="badge badge-r">?</span>':""}${row.flags?.length>0||currentDiscrepancyMessage(row)?`<span class="badge badge-w" title="${escapeHtml([...(row.flags||[]).map(f=>f.msg||f.type),currentDiscrepancyMessage(row)].filter(Boolean).join(" / "))}">!</span>`:""}</td>`;
+    const qtyCell=qtyEditing?`<td class="td-quantity td-canonical"><input class="ci qty" data-edit-input="${escapeHtml(row.id)}:qty" aria-label="จำนวน ${escapeHtml(row.itemName)}" value="${escapeHtml(row.issues?.qty?.input??row.qty??'')}" inputmode="numeric" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`:`<td class="td-quantity td-canonical" tabindex="0" role="button" aria-label="จำนวน ${escapeHtml(row.itemName)}" data-edit-cell="${escapeHtml(row.id)}:qty"><span>${row.qty??'ยังไม่ทราบ'}</span></td>`;
     return`<tr class="${cls}" data-row-id="${escapeHtml(row.id)}">${nameCell}${qtyCell}${renderPriceCell(state,row,state.colOrder[0])}${renderPriceCell(state,row,state.colOrder[1])}<td class="td-del"><button class="del" data-delete="${escapeHtml(row.id)}" title="ลบ">${BIN_ICON}</button></td></tr>`;
   }).join("");
   const scRateLabel  =summaryView.service_charge.rate>0?` (${formatPctForDisplay(summaryView.service_charge.rate)}%)`:"";
@@ -177,8 +207,8 @@ export function renderReview(model,actions) {
       <div class="sub-bar receipt-history-row" id="subBar" hidden></div>
       <div class="res-inner">
       <div class="summary-sticky-bar" id="summaryBar">
-        <div class="ssb-card"><span class="ssb-lbl">รวมค่าอาหาร</span><span class="ssb-val ssb-subtotal">${formatMoneyDisplay(summaryView.subtotal)}</span></div>
-        <div class="ssb-card ssb-card-total"><span class="ssb-lbl">ยอดที่ต้องจ่าย</span><span class="ssb-val ssb-total">${formatMoneyDisplay(summaryView.total)}</span></div>
+        <div class="ssb-card"><span class="ssb-lbl">รวมค่าอาหาร</span><span class="ssb-val ssb-subtotal">${showMoney(summaryView.subtotal)}</span></div>
+        <div class="ssb-card ssb-card-total"><span class="ssb-lbl">ยอดที่ต้องจ่าย</span><span class="ssb-val ssb-total">${showMoney(previewTotal)}</span></div>
       </div>
       <div class="summary-grid">${renderChargeCard('service_charge','Service Charge',summaryView.service_charge,'SC')}${renderChargeCard('vat','VAT',summaryView.vat)}${renderDiscountCard(summaryView.discount)}</div>
       <div class="swap-bar"><span class="swap-hint"><span class="swap-hint-fragment"><span class="swap-hint-emphasis">เลขสีส้ม </span><span class="swap-hint-p2">คือราคาที่อ่านได้จากใบเสร็จ</span></span><span class="swap-hint-fragment swap-hint-p2">หรือราคาที่คุณแก้ไขใหม่</span></span></div>
@@ -192,21 +222,22 @@ export function renderReview(model,actions) {
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
         <tfoot>
-          <tr><td class="tfoot-label" colspan="${footerColspan}">รวมค่าอาหาร</td><td class="tfoot-value tfoot-subtotal">${formatMoneyDisplay(summaryView.subtotal)}</td><td></td></tr>
+          <tr><td class="tfoot-label" colspan="${footerColspan}">รวมค่าอาหาร</td><td class="tfoot-value tfoot-subtotal">${showMoney(summaryView.subtotal)}</td><td></td></tr>
           ${showSC?`<tr><td class="tfoot-label" colspan="${footerColspan}">Service Charge${escapeHtml(scRateLabel)}</td><td class="tfoot-value tfoot-sc">+${formatMoneyDisplay(summaryView.service_charge.amount)}</td><td></td></tr>`:""}
           ${showVAT?`<tr><td class="tfoot-label" colspan="${footerColspan}">VAT${escapeHtml(vatRateLabel)}</td><td class="tfoot-value tfoot-vat">+${formatMoneyDisplay(summaryView.vat.amount)}</td><td></td></tr>`:""}
           ${showDisc?`<tr><td class="tfoot-label" colspan="${footerColspan}">ส่วนลด${escapeHtml(discRateLabel)}</td><td class="tfoot-value tfoot-disc">-${formatMoneyDisplay(summaryView.discount.amount)}</td><td></td></tr>`:""}
-          <tr class="tfoot-grand"><td class="tfoot-label" colspan="${footerColspan}">ยอดที่ต้องจ่าย</td><td class="tfoot-value tfoot-total">${formatMoneyDisplay(summaryView.total)}</td><td></td></tr>
+          <tr class="tfoot-grand"><td class="tfoot-label" colspan="${footerColspan}">ยอดที่ต้องจ่าย</td><td class="tfoot-value tfoot-total">${showMoney(previewTotal)}</td><td></td></tr>
         </tfoot>
       </table></div></div>
       <div class="results-bottom-spacer" aria-hidden="true"></div>
     </div></div>
-    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${hasReviewItems(state)?'':'disabled'}>เพิ่มเมนูลงบิล</button></div></div>`;
+    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${admission.ok?'':'disabled'}>เพิ่มเมนูลงบิล</button></div></div>`;
 
   const error=document.createElement('p');error.id='receipt-import-error';error.className='import-error';error.setAttribute('role','alert');error.hidden=true;
   document.querySelector('.results-bottom-spacer').before(error);
   const history=mountViewHistory(model,actions),cleanup=mountReceiptLayout();
   if(model.draftNotice)showReceiptError(model.draftNotice);
+
   bindActionById("backBtn",actions.backToInput);
   bindActionById("addBtn",actions.addRow);
   bindActionById("submitBtn",actions.submit);
@@ -215,10 +246,34 @@ export function renderReview(model,actions) {
   app.querySelectorAll('[data-edit-cell]').forEach(cell=>{
     const [rowId,field]=rowEditTarget(cell,'editCell');
     actions.bindAction(cell,()=>actions.startEdit(rowId,field));
+    cell.addEventListener('keydown',event=>{if(!event.isComposing&&['Enter',' '].includes(event.key)){event.preventDefault();actions.startEdit(rowId,field);}});
   });
-  app.querySelectorAll("[data-edit-input]").forEach(input=>{const[rowId,field]=rowEditTarget(input,"editInput");const selectAll=field!=="itemName";let committing=false;input.addEventListener("focus",()=>{if(selectAll&&typeof input.select==="function")input.select();});input.addEventListener("blur",()=>{if(committing){committing=false;return;}actions.commitRow(rowId,field,input.value);});input.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();committing=true;input.blur();actions.commitRow(rowId,field,input.value);}if(e.key==="Escape"){e.preventDefault();committing=true;input.blur();actions.cancelEdit();}});});
-  app.querySelectorAll("[data-delete]").forEach(btn=>{actions.bindAction(btn,()=>actions.deleteRow(btn.dataset.delete));});
-  app.querySelectorAll("[data-summary-card]").forEach(card=>{card.querySelectorAll("[data-summary-input]").forEach(input=>{const[cardKind,field]=input.dataset.summaryInput.split(":");let committing=false;let valueAtFocus=null;input.addEventListener("pointerdown",()=>{_summaryCardFocusing=true;});input.addEventListener("focus",()=>{_summaryCardFocusing=false;valueAtFocus=input.value;if(typeof input.select==="function")input.select();});input.addEventListener("blur",()=>{if(committing){committing=false;return;}if(input.value===valueAtFocus){return;}if(_summaryCardFocusing){actions.editSummary(cardKind,field,input.value,{forceHistory:true,render:false});return;}actions.editSummary(cardKind,field,input.value);});input.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();committing=true;input.blur();actions.editSummary(cardKind,field,input.value);}if(e.key==="Escape"){e.preventDefault();committing=true;input.blur();actions.cancelEdit();}});});});
+  app.querySelectorAll('[data-edit-input]').forEach(input=>{
+    const [rowId,field]=rowEditTarget(input,'editInput'),initial=input.value;let committed=false;
+    const commit=()=>{if(committed)return;committed=true;actions.commitRow(rowId,field,input.value);};
+    input.addEventListener('blur',()=>{if(!committed&&input.value!==initial)commit();});
+    input.addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;
+      if(e.key==='Enter'){e.preventDefault();commit();}
+      if(e.key==='Escape'){e.preventDefault();committed=true;actions.cancelEdit();}
+    });
+  });
+  app.querySelectorAll('[data-delete]').forEach(btn=>actions.bindAction(btn,()=>actions.deleteRow(btn.dataset.delete)));
+  app.querySelectorAll('[data-summary-input]').forEach(input=>{
+    const [kind,field]=input.dataset.summaryInput.split(':');let initial=input.value,committed=false;
+    input.addEventListener('pointerdown',()=>{summaryFocusTarget=input.dataset.summaryInput;});
+    input.addEventListener('focus',()=>{initial=input.value;input.select();});
+    const commit=()=>{if(committed)return;committed=true;actions.editSummary(kind,field,input.value);};
+    input.addEventListener('blur',event=>{
+      if(committed||input.value===initial)return;
+      const target=event.relatedTarget?.dataset.summaryInput??summaryFocusTarget;
+      commit();
+      if(target&&target!==input.dataset.summaryInput)requestAnimationFrame(()=>app.querySelector(`[data-summary-input="${target}"]`)?.focus());
+    });
+    input.addEventListener('keydown',e=>{if(e.isComposing||e.keyCode===229)return;
+      if(e.key==='Enter'){e.preventDefault();commit();}
+      if(e.key==='Escape'){e.preventDefault();committed=true;actions.cancelEdit();app.querySelector(`[data-summary-input="${kind}:${field}"]`)?.focus();}
+    });
+  });
   const cancelInitial=scheduleInitialLayout();
   return ()=>{cancelInitial();cleanup();history.dispose();};
   function bindActionById(id,action){const button=document.getElementById(id);if(button)actions.bindAction(button,action);}

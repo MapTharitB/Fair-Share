@@ -1,3 +1,11 @@
+import {receiptNumber,receiptDigits,emptyReceiptEvidence,fieldIssue} from './receipt-fields.mjs';
+// Current comparison is derived. Source warnings and printed fields never change.
+export function getReceiptDiscrepancy(row){
+  const e=row.evidence;
+  if(row.priceEdited||row.qty==null||e?.unitCents==null||e?.totalCents==null)return null;
+  const calculatedCents=e.unitCents*row.qty;
+  return calculatedCents===e.totalCents?null:{calculatedCents,printedCents:e.totalCents};
+}
 // Extracted from Baseline/Parser.html parser helpers; no UI or OCR.
 export function createReceiptParser({createId = ()=>Math.random().toString(36).slice(2,9)} = {}) {
 const UNIT_WORDS = new Set(["ขวด","แก้ว","จาน ","ชาม","ชิ้น","ถ้วย","ชุด","แพ็ค","กล่อง","กระป๋อง","โหล","ถุง","อัน","ที่","หัว","ตัว","กิโล","กก","ลิตร","มล","คู่","แผ่น","เส้น","portion","pcs","pc","set","bottle","glass","can","box","cup","bowl"]);
@@ -37,63 +45,145 @@ function isSummaryOrMetaLine(line){
   if(/\d/.test(s)&&isSummaryByComposition(s))return true; return false;
 }
 function quickClassify(line){const s=nfc(String(line||"")).trim();if(!s)return"empty";if(isSummaryOrMetaLine(s))return"meta";return"item";}
-function normalizeText(raw){return String(raw??"").normalize("NFC").replace(/\u00A0|\u3000|\uFEFF/g," ").replace(/\t+/g," ").replace(/\r/g,"").replace(/[，]/g,",").replace(/[．｡。]/g,".").split("\n").map(l=>l.replace(/\s+/g," ").trim()).filter(Boolean).join("\n");}
+function normalizeText(raw){return receiptDigits(raw??"").replace(/\u0e4d\u0e32/g,"ำ").normalize("NFC").replace(/\u00A0|\u3000|\uFEFF/g," ").replace(/\t+/g," ").replace(/\r/g,"").replace(/[，]/g,",").replace(/[．｡。]/g,".").split("\n").map(l=>l.replace(/\s+/g," ").trim()).filter(Boolean).join("\n");}
 function looksComplete(line){const ts=String(line||"").trim().split(/\s+/);return ts.length>0&&/^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(ts[ts.length-1]);}
+const lineText=line=>typeof line==='string'?line:line.text;
+function joinLines(lines){return typeof lines[0]==='string'?lines.join(' '):{text:lines.map(lineText).join(' '),sourceLines:lines.flatMap(l=>l.sourceLines)};}
 function collapseVerticalOCR(lines){
-  const isPureNumericLine=line=>{const s=String(line??"").trim();return/^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(s)||/^\d{1,2}$/.test(s);};
-  const isCategoryHeaderCandidate=line=>{const s=String(line??"").trim();return s.length>0&&s.length<30&&!/\d/.test(s);};
-  let pureNumericCount=0; for(const line of lines){if(isSummaryOrMetaLine(line))continue;if(isPureNumericLine(line))pureNumericCount++;}
-  const numericRatio=lines.length?pureNumericCount/lines.length:0;
-  if(!(pureNumericCount>=3&&numericRatio>=0.20))return lines;
-  const result=[];let i=0;
-  while(i<lines.length){const current=lines[i];if(isPureNumericLine(current)){i++;continue;}const nameParts=[];const first=String(current??"").trim();if(first)nameParts.push(first);i++;while(i<lines.length&&!isPureNumericLine(lines[i])&&nameParts.length<3){const part=String(lines[i]??"").trim();if(part)nameParts.push(part);i++;}const numericParts=[];while(i<lines.length&&isPureNumericLine(lines[i])){numericParts.push(String(lines[i]??"").trim());i++;}if(!numericParts.length){if(isCategoryHeaderCandidate(nameParts[0]||""))continue;continue;}result.push([...nameParts,...numericParts].join(" ").replace(/\s+/g," ").trim());}
-  return result;
+  const numeric=line=>receiptNumber(lineText(line))!==null;
+  const count=lines.filter(l=>!isSummaryOrMetaLine(lineText(l))&&numeric(l)).length;
+  if(count<3||count/lines.length<0.2)return lines;
+  const out=[];let i=0;
+  while(i<lines.length){
+    if(lines[i]?.table){out.push(lines[i++]);continue;}
+    if(numeric(lines[i])){i++;continue;}
+    const parts=[lines[i++]];
+    while(i<lines.length&&!lines[i]?.table&&!numeric(lines[i])&&parts.length<3)parts.push(lines[i++]);
+    let n=0;while(i<lines.length&&numeric(lines[i])){parts.push(lines[i++]);n++;}
+    if(n)out.push(joinLines(parts));
+  }
+  return out;
 }
 function mergeWrappedLines(lines){
-  const out=[];let i=0;let prevWasMeta=false;
-  while(i<lines.length){const cur=lines[i];const curIsMeta=quickClassify(cur)==="meta";if(curIsMeta||looksComplete(cur)||prevWasMeta){out.push(cur);prevWasMeta=curIsMeta;i++;continue;}prevWasMeta=false;const next=lines[i+1]??null;const after=lines[i+2]??null;if(next&&quickClassify(next)!=="meta"&&!looksComplete(next)&&after&&quickClassify(after)!=="meta"&&looksComplete(after)){out.push(`${cur} ${next} ${after}`.replace(/\s+/g," ").trim());i+=3;continue;}if(next&&quickClassify(next)!=="meta"&&/\d/.test(next)){out.push(`${cur} ${next}`.replace(/\s+/g," ").trim());i+=2;continue;}out.push(cur);i++;}
+  const out=[];let i=0,prevWasMeta=false;
+  while(i<lines.length){
+    const cur=lines[i],text=lineText(cur),meta=quickClassify(text)==='meta';
+    if(cur?.table||meta||looksComplete(text)||prevWasMeta){out.push(cur);prevWasMeta=meta;i++;continue;}
+    prevWasMeta=false;const next=lines[i+1],after=lines[i+2];
+    if(next&&!next?.table&&quickClassify(lineText(next))!=='meta'&&!looksComplete(lineText(next))&&after&&!after?.table&&quickClassify(lineText(after))!=='meta'&&looksComplete(lineText(after))){out.push(joinLines([cur,next,after]));i+=3;continue;}
+    if(next&&!next?.table&&quickClassify(lineText(next))!=='meta'&&/\d/.test(lineText(next))){out.push(joinLines([cur,next]));i+=2;continue;}
+    out.push(cur);i++;
+  }
   return out;
 }
 function cleanToken(raw){return stripPunct(raw).replace(/,/g,"");}
 function isNoiseToken(raw){const s=cleanToken(raw);if(!s)return true;if(DATE_RE.test(s))return true;if(TIME_RE.test(s))return true;if(PHONE_RE.test(s))return true;if(LONG_NUM_RE.test(s))return true;if(ALNUM_ID_RE.test(s))return true;if(SEPARATOR_RE.test(raw))return true;if(FIELD_LABEL_RE.test(s))return true;return false;}
 function isSwallowLabel(raw){const s=cleanToken(raw).toLowerCase();return/^(?:no\.?|เลขที่|table|โต๊ะ|phone|tel|telephone|mobile|มือถือ|โทร|เบอร์|qty|quantity|จำนวน|ราคา|price|unit|หน่วยละ|amount|จำนวนเงิน|subtotal|total|grand|net|ยอดรวม|ยอดชำระ|ยอดสุทธิ|รวมสุทธิ|รวม|สุทธิ|ยอด|ทั้งสิ้น|เงินสด|เงินทอน|ทอน|รับเงิน|ชำระเงิน|vat|ภาษี|order|invoice|bill|receipt|ref|id|code|date|time|วันที่|เวลา|สาขา|branch|staff|cashier|พนักงาน|แคชเชียร์|ลูกค้า|customer|cash|change|balance|tip|rounding)$/i.test(s);}
-function stripNoiseTokens(line){const tokens=nfc(String(line||"").trim()).split(/\s+/).filter(Boolean);const kept=[];let swallowNext=false;for(let i=0;i<tokens.length;i++){const raw=tokens[i];const clean=cleanToken(raw);if(!clean)continue;if(/^(?:qty|quantity|จำนวน)$/i.test(clean)&&/^\d{1,2}$/.test(tokens[i+1]??"")){swallowNext=false;continue;}if(isSwallowLabel(raw)){swallowNext=true;continue;}if(swallowNext){if(/^(?:-?\d+(?:[.,]\d{1,2})?|0(?:[\s-]*\d){7,}|(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{2,})$/.test(clean)){swallowNext=false;continue;}swallowNext=false;}if(isNoiseToken(raw))continue;kept.push(raw);}return kept.join(" ").replace(/\s+/g," ").trim();}
+function stripNoiseTokens(line){const tokens=nfc(String(line||"").trim()).split(/\s+/).filter(Boolean);const kept=[];let swallowNext=false;for(let i=0;i<tokens.length;i++){const raw=tokens[i];const clean=cleanToken(raw);if(!clean)continue;if(/^(?:qty|quantity|จำนวน)$/i.test(clean)&&/^\d{1,2}$/.test(tokens[i+1]??"")){swallowNext=false;continue;}if(/^(?:อาหาร|สินค้า)$/.test(clean)&&/\d/.test(tokens[i+1]??"")){kept.push(raw);continue;}if(isSwallowLabel(raw)){swallowNext=true;continue;}if(swallowNext){if(/^(?:-?\d+(?:[.,]\d{1,2})?|0(?:[\s-]*\d){7,}|(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{2,})$/.test(clean)){swallowNext=false;continue;}swallowNext=false;}if(isNoiseToken(raw))continue;kept.push(raw);}return kept.join(" ").replace(/\s+/g," ").trim();}
 function tokenizeLine(line){return nfc(String(line||"").trim()).split(/\s+/).filter(Boolean).map(raw=>{const clean=raw.replace(/,/g,"");if(/^-?\d+(?:\.\d{1,2})?$/.test(clean)){const value=parseFloat(clean);const isDecimal=raw.includes(".");const hasThousandsSep=/\d,\d{3}/.test(raw);return{type:"number",raw,value,isDecimal,hasThousandsSep,isInteger:Number.isInteger(value)&&!isDecimal,isNegative:value<0,isDefinitelyPrice:isDecimal||hasThousandsSep||Math.abs(value)>999,couldBeQty:!isDecimal&&!hasThousandsSep&&Number.isInteger(value)&&value>=1&&value<=99};}if(UNIT_WORDS.has(stripPunct(raw)))return{type:"unit",raw};return{type:"text",raw};});}
 function scoreAssignment(lt,qt,up,tokens,ctx){let s=0;if(lt.isDecimal)s+=20;if(lt.hasThousandsSep)s+=18;if(lt.value>999)s+=15;else if(lt.value>99)s+=10;else if(lt.value>20)s+=5;else if(lt.value<5)s-=6;if(lt.isInteger&&!lt.isDecimal&&!lt.hasThousandsSep){const hasTextToken=tokens.some(t=>t.type==="text"&&/\p{L}/u.test(t.raw));if(hasTextToken){if(lt.value>=20&&lt.value<=500)s+=6;else if(lt.value>=10&&lt.value<=1000)s+=3;}}if(lt.i===tokens.length-1)s+=8;else if(lt.i>=tokens.length-2)s+=3;if(ctx){if(lt.value>=ctx.p10*0.4&&lt.value<=ctx.p90*2.5)s+=8;else if(lt.value<ctx.p10*0.2||lt.value>ctx.p90*5)s-=5;}if(qt){if(qt.value<lt.value)s+=18;else if(qt.value>lt.value)s-=20;if(qt.value<=6)s+=10;else if(qt.value<=12)s+=5;else if(qt.value<=20)s+=2;const hasAdjUnit=tokens[qt.i+1]?.type==="unit"||tokens[qt.i-1]?.type==="unit";if(hasAdjUnit)s+=12;const prevTxt=tokens[qt.i-1]?.type==="text";const nextTxt=tokens[qt.i+1]?.type==="text";if(prevTxt&&nextTxt)s-=28;else if(prevTxt)s-=2;if(ctx){if(qt.value<=ctx.maxQty+3)s+=5;if(qt.value>ctx.maxQty*3+5)s-=8;}}if(up&&qt){const calc=r2(up.value*qt.value);const diff=Math.abs(calc-lt.value);if(diff<0.01)s+=55;else if(diff<=1.0)s+=45;else if(diff<=lt.value*0.03)s+=20;else s-=30;if(up.value<=lt.value)s+=5;else s-=8;if(up.isDecimal)s+=3;}return s;}
 function findBestAssignment(tokens,ctx){const nums=tokens.map((t,i)=>({...t,i})).filter(t=>t.type==="number"&&!t.isNegative);if(!nums.length)return null;if(nums.length===1){const n=nums[0];const sc=(n.isDefinitelyPrice?38:n.value>20?25:10)+(n.i===tokens.length-1?8:0);return{lt:n,qt:null,up:null,score:sc};}const candidates=[];for(const lt of nums){candidates.push({lt,qt:null,up:null,score:scoreAssignment(lt,null,null,tokens,ctx)});for(const qt of nums.filter(n=>n!==lt&&n.couldBeQty)){candidates.push({lt,qt,up:null,score:scoreAssignment(lt,qt,null,tokens,ctx)});for(const up of nums.filter(n=>n!==lt&&n!==qt)){candidates.push({lt,qt,up,score:scoreAssignment(lt,qt,up,tokens,ctx)});}}}candidates.sort((a,b)=>b.score-a.score);return candidates[0];}
-const ITEM_CODE_RE=/^([A-Z][A-Z0-9]{1,7}|\d{2,6})\s+(?=[^\d])/;
-function buildItemRow(p){const qty=p.qty??null;return{id:uid(),rawLine:p.rawLine??"",lineType:"item",pattern:p.pattern??"unknown",itemCode:p.itemCode??null,itemName:p.itemName??"",qty:qty??1,qtyWasNull:qty==null,unit:p.unit??null,priceSource:p.priceSource??"line_total",priceValue:p.priceValue??0,confidence:p.confidence??0.5,needsReview:(p.confidence??0.5)<0.72,isDiscount:false,discountAmount:null,flags:p.flags??[]};}
-function parseDiscountLine(rawLine){const s=nfc(String(rawLine||"").trim());const tokens=s.split(/\s+/);let discountAmount=null;for(const t of tokens){const v=parseFloat(t.replace(/,/g,"").replace(/^[(\-]+/,"").replace(/[)]+$/,""));if(isFinite(v)&&v>0){discountAmount=v;break;}}const isAmountToken=t=>{const c=t.replace(/,/g,"").replace(/^[(\-]+/,"").replace(/[)]+$/,"");return/^\d+(?:\.\d{1,2})?$/.test(c)&&parseFloat(c)>0;};const label=tokens.filter(t=>!isAmountToken(t)).join(" ").replace(/^[-\s]+/,"").trim()||"ส่วนลด";const hasPercent=/%/.test(s);return{id:uid(),rawLine,lineType:"discount",pattern:"discount",itemCode:null,itemName:label,qty:1,qtyWasNull:false,unit:null,priceSource:"line_total",priceValue:-(discountAmount??0),confidence:discountAmount!=null?0.92:0.5,needsReview:false,isDiscount:true,discountType:hasPercent?"percent":"baht",discountAmount:discountAmount??0,flags:[]};}
-// In the printed name/quantity/unit/total layout the last column is authoritative.
-// Apply this only when both price columns are explicit and contradict each other.
-function mismatchedPrintedRow(tokens,rawLine,itemCode){
-  const [qty,unit,total]=tokens.slice(-3);
-  if(!qty?.couldBeQty||unit?.type!=="number"||unit.isNegative||
-    total?.type!=="number"||total.isNegative||
-    !(unit.isDefinitelyPrice||total.isDefinitelyPrice))return null;
-  const name=tokens.slice(0,-3).map(t=>t.raw).join(" ");
-  if(!/\p{L}/u.test(name))return null;
-  const calculated=Math.round(unit.value*100)*qty.value;
-  if(calculated===Math.round(total.value*100))return null;
-  return buildItemRow({rawLine,itemCode,itemName:name,qty:qty.value,priceValue:total.value,
-    confidence:0.5,pattern:"unit-qty-total",flags:[{type:"calc_mismatch",
-      msg:`ราคา ${unit.raw} × ${qty.raw} ไม่ตรงกับยอด ${total.raw} ในใบเสร็จ`}]});
+const ITEM_CODE_RE=/^([A-Z][A-Z0-9]{1,7})\s+(?=[^\d])/;
+function buildItemRow(p){
+  const missing=p.priceValue==null,issues={...(p.issues??{})};
+  if(missing&&!issues.price)issues.price=fieldIssue('missing',p.priceSource??'line_total');
+  return {id:uid(),rawLine:p.rawLine??'',lineType:'item',pattern:p.pattern??'unknown',itemCode:p.itemCode??null,itemName:p.itemName??'',
+    qty:Object.hasOwn(p,'qty')?p.qty:1,qtyWasNull:!Object.hasOwn(p,'qty'),unit:p.unit??null,priceSource:p.priceSource??'line_total',priceValue:p.priceValue??null,
+    confidence:p.confidence??0.5,needsReview:(p.confidence??0.5)<0.72,isDiscount:false,discountAmount:null,flags:p.flags??[],
+    evidence:p.evidence??emptyReceiptEvidence(),issues,priceEdited:false};
 }
-function parseItemLine(rawLine,ctx){const codeMatch=nfc(String(rawLine||"")).match(ITEM_CODE_RE);const itemCode=codeMatch?.[1]??null;const stripped=codeMatch?rawLine.slice(codeMatch[0].length):rawLine;const tokens=tokenizeLine(stripped);const printed=mismatchedPrintedRow(tokens,rawLine,itemCode);if(printed)return printed;const best=findBestAssignment(tokens,ctx);if(!best)return buildItemRow({rawLine,itemCode,itemName:stripped,confidence:0.15,pattern:"text-only"});const used=new Set([best.lt.i,best.qt?.i,best.up?.i].filter(x=>x!=null));let unit=null;if(best.qt){const after=tokens[best.qt.i+1];const before=tokens[best.qt.i-1];if(after?.type==="unit"){unit=stripPunct(after.raw);used.add(best.qt.i+1);}else if(before?.type==="unit"){unit=stripPunct(before.raw);used.add(best.qt.i-1);}}const itemName=tokens.filter((_,i)=>!used.has(i)).map(t=>t.raw).join(" ").trim()||stripped;const flags=[];if(best.up&&best.qt){const calc=r2(best.up.value*best.qt.value);if(Math.abs(calc-best.lt.value)>1.0)flags.push({type:"calc_mismatch",msg:`${best.up.value} x ${best.qt.value} = ${calc} != ${best.lt.value}`});}if(best.qt&&best.qt.value>=best.lt.value)flags.push({type:"qty_gte_price",msg:`qty(${best.qt.value}) >= price(${best.lt.value})`});const conf=Math.min(Math.max(0.35+best.score/120,0.2),0.97);let priceSource="line_total";let priceValue=best.lt.value;if(best.up){priceSource="unit_price";priceValue=best.up.value;}else if(best.qt&&best.lt.i<best.qt.i){priceSource="unit_price";}const pattern=best.up?"unit-qty-total":best.qt?"item-qty-price":"item-price-only";return buildItemRow({rawLine,itemCode,itemName,qty:best.qt?.value??null,unit,priceSource,priceValue,confidence:conf,flags,pattern});}
-function getDerivedValues(row){const qty=row.qty||1;if(row.priceSource==="unit_price")return{unitPrice:row.priceValue,lineTotal:r2(row.priceValue*qty)};return{lineTotal:row.priceValue,unitPrice:r2(row.priceValue/qty)};}
-function buildContext(rows){let hc=rows.filter(r=>!r.isDiscount&&r.confidence>=0.72);if(hc.length<2)hc=rows.filter(r=>!r.isDiscount&&r.confidence>=0.50);if(hc.length<2)return null;const prices=hc.map(r=>getDerivedValues(r).lineTotal).filter(v=>v>0).sort((a,b)=>a-b);const qtys=hc.map(r=>r.qty);const pct=(arr,p)=>arr[Math.floor(arr.length*p)]??arr[arr.length-1];return{p10:pct(prices,.10),p25:pct(prices,.25),p75:pct(prices,.75),p90:pct(prices,.90),minPrice:prices[0],maxPrice:prices[prices.length-1],maxQty:Math.max(...qtys)};}
+function parseDiscountLine(rawLine){const s=nfc(String(rawLine||"").trim());const tokens=s.split(/\s+/);let discountAmount=null;for(const t of tokens){const v=parseFloat(t.replace(/,/g,"").replace(/^[(\-]+/,"").replace(/[)]+$/,""));if(isFinite(v)&&v>0){discountAmount=v;break;}}const isAmountToken=t=>{const c=t.replace(/,/g,"").replace(/^[(\-]+/,"").replace(/[)]+$/,"");return/^\d+(?:\.\d{1,2})?$/.test(c)&&parseFloat(c)>0;};const label=tokens.filter(t=>!isAmountToken(t)).join(" ").replace(/^[-\s]+/,"").trim()||"ส่วนลด";const hasPercent=/%/.test(s);return{id:uid(),rawLine,lineType:"discount",pattern:"discount",itemCode:null,itemName:label,qty:1,qtyWasNull:false,unit:null,priceSource:"line_total",priceValue:-(discountAmount??0),confidence:discountAmount!=null?0.92:0.5,needsReview:false,isDiscount:true,discountType:hasPercent?"percent":"baht",discountAmount:discountAmount??0,flags:[]};}
+function parseItemLine(line,ctx,origin){
+  const literal=origin?.rawLine??line;
+  const codeMatch=nfc(line).match(ITEM_CODE_RE),itemCode=origin?.itemCode??codeMatch?.[1]??null;
+  const stripped=codeMatch?line.slice(codeMatch[0].length):line;
+  const tokens=tokenizeLine(stripped);
+  // Map token occurrences forward through the contributing literal lines. No
+  // string-to-first-row lookup: equal rows retain their own source occurrence.
+  const literalTokens=literal.match(/\S+/g)??[];let cursor=0;
+  for(const t of tokens){while(cursor<literalTokens.length&&normalizeText(literalTokens[cursor])!==t.raw)cursor++;t.literal=literalTokens[cursor++]??null;}
+  const evidence=emptyReceiptEvidence();evidence.sourceLines=origin?.sourceLines??[];
+  const identify=(key,t)=>{if(!t)return;evidence[key+'Text']=t.literal;if(key!=='quantity')evidence[key+'Cents']=t.literal&&receiptNumber(t.literal)!==null?Math.round(receiptNumber(t.literal)*100):null;};
+  const row=(p)=>{const r=buildItemRow({rawLine:literal,itemCode,evidence,...p});
+    if(origin?.tableAmbiguous&&r.priceValue!==null){r.priceSource='line_total';r.priceValue=tokens.at(-1)?.value??r.priceValue;r.issues.price=fieldIssue('ambiguous','line_total');}
+    const proof=r.priceSource==='unit_price'?evidence.unitCents:evidence.totalCents;
+    if(r.priceValue!==null&&proof===null&&!r.issues.price){r.priceValue=null;r.issues.price=fieldIssue('invalid',r.priceSource);}
+    return r;};
+  const price=t=>t&&receiptNumber(t.raw)!==null;
+  const substantive=ts=>ts.some(t=>/\p{L}/u.test(t.raw));
+  const last=tokens.at(-1),prefix=tokens.slice(0,-1);
+  if(!price(last)){
+    const numeric=last&&/^[+-]?\d[\d,.]*$/.test(last.raw);if(numeric)identify('total',last);
+    const qty=prefix.find(t=>t.couldBeQty);if(qty)identify('quantity',qty);
+    return row({itemName:stripped,qty:qty?.value??1,confidence:0.15,pattern:'unread-price',issues:{price:fieldIssue(numeric?'invalid':'missing','line_total')}});
+  }
+  identify('total',last);
+  const [qt,up,lt]=tokens.slice(-3),nameTokens=tokens.slice(0,-3);
+  if(qt?.couldBeQty&&price(up)&&price(lt)&&substantive(nameTokens)){
+    identify('quantity',qt);identify('unit',up);
+    const exact=Math.round(up.value*100)*qt.value===Math.round(lt.value*100);
+    const labeled=origin?.labeledQty||/\b(?:qty|quantity)\b|จำนวน/i.test(literal);
+    const ambiguousRole=nameTokens.at(-1)?.type==='number';
+    const bare=!up.isDefinitelyPrice&&!lt.isDefinitelyPrice&&!exact&&!labeled;
+    return row({itemName:nameTokens.map(t=>t.raw).join(' '),qty:qt.value,priceSource:exact&&!ambiguousRole?'unit_price':'line_total',priceValue:exact&&!ambiguousRole?up.value:lt.value,
+      confidence:exact?0.97:0.5,pattern:'unit-qty-total',issues:{...(bare?{qty:fieldIssue('ambiguous','qty')}:{}),...(ambiguousRole?{price:fieldIssue('ambiguous','line_total')}:{})},
+      flags:exact?[]:[{type:'calc_mismatch',msg:`ราคา ${up.literal??up.raw} × ${qt.literal??qt.raw} ไม่ตรงกับยอด ${lt.literal??lt.raw} ในใบเสร็จ`}]});
+  }
+  // A leading standalone numeric name/code and a fractional quantity have no
+  // reliable role without labels. Keep the entire proposed name.
+  const leading=prefix[0]?.type==='number'&&substantive(prefix.slice(1));
+  const fractional=prefix.at(-1)?.type==='number'&&!prefix.at(-1).isInteger;
+  if((leading&&!origin?.labeledQty)||fractional){
+    identify('quantity',leading?prefix[0]:prefix.at(-1));
+    return row({itemName:prefix.map(t=>t.raw).join(' '),qty:null,priceValue:last.value,issues:{qty:fieldIssue('ambiguous','qty')},pattern:'ambiguous-quantity'});
+  }
+  const quantity=prefix.at(-1),simpleName=prefix.slice(0,-1);
+  const nameNumbers= simpleName.every((t,i)=>t.type!=='number'||simpleName[i-1]?.type==='text'&&simpleName[i+1]?.type==='text');
+  if(quantity?.couldBeQty&&substantive(simpleName)&&nameNumbers){
+    identify('quantity',quantity);
+    return row({itemName:simpleName.map(t=>t.raw).join(' '),qty:quantity.value,priceValue:last.value,confidence:0.8,pattern:'item-qty-price',
+      flags:quantity.value>=last.value?[{type:'qty_gte_price',msg:`qty(${quantity.value}) >= price(${last.value})`}]:[]});
+  }
+  const internalNumber=prefix.findIndex(t=>t.type==='number');
+  if(internalNumber>0&&prefix.slice(internalNumber+1).some(t=>t.type==='text'))return row({itemName:prefix.map(t=>t.raw).join(' '),priceValue:last.value,confidence:0.8,pattern:'named-number'});
+  const best=findBestAssignment(tokens,ctx);
+  if(!best)return row({itemName:stripped});
+  const used=new Set([best.lt.i,best.qt?.i,best.up?.i].filter(v=>v!=null));
+  let unit=null;if(best.qt){for(const i of [best.qt.i+1,best.qt.i-1])if(tokens[i]?.type==='unit'){unit=stripPunct(tokens[i].raw);used.add(i);break;}}
+  const name=tokens.filter((_,i)=>!used.has(i)).map(t=>t.raw).join(' ')||stripped;
+  const numberCount=tokens.filter(t=>t.type==='number').length;
+  const ambiguous=numberCount>3||numberCount>2&&!best.up;
+  identify('quantity',best.qt);if(best.up)identify('unit',best.up);
+  // Two-price nonstandard layouts still use the existing scoring engine, but a
+  // competing unexplained number is a proposal requiring confirmation.
+  let source=best.up||best.qt&&best.lt.i<best.qt.i?'unit_price':'line_total',value=best.up?.value??best.lt.value;
+  if(source==='unit_price'&&!best.up){identify('unit',best.lt);evidence.totalText=null;evidence.totalCents=null;}
+  const mismatch=best.up&&best.qt&&Math.round(best.up.value*100)*best.qt.value!==Math.round(best.lt.value*100);
+  if(best.up){identify('total',best.lt);if(mismatch){source='line_total';value=best.lt.value;}}
+  const issues=ambiguous?{price:fieldIssue('ambiguous','line_total')}:{};
+  if(ambiguous){source='line_total';value=last.value;}
+  return row({itemName:name,unit,qty:best.qt?.value??1,flags:[...(best.qt&&best.qt.value>=best.lt.value?[{type:'qty_gte_price',msg:`qty(${best.qt.value}) >= price(${best.lt.value})`}]:[]),...(mismatch?[{type:'calc_mismatch',msg:`ราคา ${best.up.literal??best.up.raw} × ${best.qt.literal??best.qt.raw} ไม่ตรงกับยอด ${best.lt.literal??best.lt.raw} ในใบเสร็จ`}]:[])],priceSource:source,priceValue:value,confidence:Math.min(Math.max(0.35+best.score/120,0.2),0.97),issues,pattern:best.up?'unit-qty-total':best.qt?'item-qty-price':'item-price-only'});
+}
+function getDerivedValues(row){
+  const qty=row.qty,value=row.priceValue;
+  if(value===null)return {unitPrice:null,lineTotal:null};
+  if(row.priceSource==='unit_price')return {unitPrice:value,lineTotal:qty==null?null:r2(value*qty)};
+  return {lineTotal:value,unitPrice:qty==null?null:r2(value/qty)};
+}
+function buildContext(rows){const known=rows.filter(r=>r.qty!==null&&r.priceValue!==null&&!Object.keys(r.issues??{}).length);let hc=known.filter(r=>!r.isDiscount&&r.confidence>=0.72);if(hc.length<2)hc=known.filter(r=>!r.isDiscount&&r.confidence>=0.50);if(hc.length<2)return null;const prices=hc.map(r=>getDerivedValues(r).lineTotal).filter(v=>v>0).sort((a,b)=>a-b);const qtys=hc.map(r=>r.qty);const pct=(arr,p)=>arr[Math.floor(arr.length*p)]??arr[arr.length-1];return{p10:pct(prices,.10),p25:pct(prices,.25),p75:pct(prices,.75),p90:pct(prices,.90),minPrice:prices[0],maxPrice:prices[prices.length-1],maxQty:Math.max(...qtys)};}
 const _SC_STRONG=/^(?:service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส)(?=[\s%.,฿$\d]|$)/i;
 const _VAT_STRONG=/^(?:vat|value\sadded\stax|ภาษีมูลค่าเพิ่ม)(?=[\s%.,฿$\d]|$)/i;
 const _SC_WEAK=/^sc(?=[\s%.,\d]|$)/i;const _VAT_WEAK=/^ภาษี(?=[\s%.,฿$\d]|$)/i;
 function _normSumLine(s){return String(s||"").normalize("NFC").replace(/[\u200B-\u200D\uFEFF]/g,"").replace(/\u00A0/g," ").replace(/\s+/g," ").trim().toLowerCase();}
-function _extractPct(s){const m=String(s).match(/(\d[\d,]*(?:\.\d+)?)\s*%/);return m?Number(m[1].replace(/,/g,"")):null;}
-function _extractAmt(s){const m=String(s).match(/(-?\d[\d,]*(?:\.\d{1,2})?)\s*$/);return m?parseFloat(m[1].replace(/,/g,"")):null;}
+function _adjustmentTail(s){return receiptDigits(s).replace(_SC_STRONG,'').replace(_VAT_STRONG,'').replace(_SC_WEAK,'').replace(_VAT_WEAK,'').replace(/^(?:discount|disc\.?|ส่วนลด|ลดราคา|ลดพิเศษ|หักส่วนลด)\s*/i,'').trim();}
+function _extractPct(s){const m=_adjustmentTail(s).match(/(?:^|\s)(\S+?)\s*%/);return m?receiptNumber(m[1],{summary:true}):null;}
+function _extractAmt(s){let token=_adjustmentTail(s).split(/\s+/).at(-1);if(DISCOUNT_RE.test(s))token=token.replace(/^-/, '');return receiptNumber(token);}
 function countSummaryKeywords(line){const s=nfc(String(line||"")).toLowerCase();let count=0;for(const kw of MULTI_KW_SUMMARY_SET){if(s.includes(kw)){count++;if(count>=2)return count;}}return count;}
 function isServiceChargeLine(norm){return _SC_STRONG.test(norm)||_SC_WEAK.test(norm);}
 function isVatLine(norm){return _VAT_STRONG.test(norm)||_VAT_WEAK.test(norm);}
 function isDiscountSummaryLine(raw,norm){return DISCOUNT_RE.test(raw)||DISCOUNT_RE.test(norm);}
-function extractSummarySources(rawLines,onEntries){const entries=rawLines.map((raw,index)=>{const norm=_normSumLine(raw);if(!norm)return null;if(POST_DISCOUNT_TOTAL_RE.test(nfc(raw).trim()))return null;const pct=_extractPct(raw);const amt=_extractAmt(raw);if(isServiceChargeLine(norm))return{kind:"service_charge",raw,norm,index,pct:Number.isFinite(pct)?pct:null,amt:Number.isFinite(amt)?Math.abs(amt):null,hasPct:pct!=null,hasAmt:amt!=null};if(isVatLine(norm))return{kind:"vat",raw,norm,index,pct:Number.isFinite(pct)?pct:null,amt:Number.isFinite(amt)?Math.abs(amt):null,hasPct:pct!=null,hasAmt:amt!=null};if(isDiscountSummaryLine(raw,norm))return{kind:"discount",raw,norm,index,pct:Number.isFinite(pct)?pct:null,amt:Number.isFinite(amt)?Math.abs(amt):null,hasPct:pct!=null,hasAmt:amt!=null};return null;}).filter(Boolean);onEntries?.(entries);const scList=entries.filter(e=>e.kind==="service_charge");const vatList=entries.filter(e=>e.kind==="vat");const discList=entries.filter(e=>e.kind==="discount");const pickSCorVAT=list=>{if(!list.length)return null;const pctItem=list.find(x=>x.hasPct&&Number.isFinite(x.pct));if(pctItem)return{mode:"percent",value:pctItem.pct,raw:pctItem.raw,sourceIndex:pctItem.index,sourceCount:list.length};const amtItem=list.find(x=>x.hasAmt&&Number.isFinite(x.amt));if(amtItem)return{mode:"amount",value:amtItem.amt,raw:amtItem.raw,sourceIndex:amtItem.index,sourceCount:list.length};return null;};const discountPct=discList.find(x=>x.hasPct&&Number.isFinite(x.pct));const rawAmountDiscountSum=r2(discList.filter(x=>!x.hasPct&&x.hasAmt&&Number.isFinite(x.amt)).reduce((s,x)=>s+Math.abs(x.amt),0));const discountAmtItem=discList.find(x=>!x.hasPct&&x.hasAmt&&Number.isFinite(x.amt));return{service_charge:pickSCorVAT(scList),vat:pickSCorVAT(vatList),discount:discountPct?{mode:"percent",value:discountPct.pct,raw:discountPct.raw,sourceIndex:discountPct.index,sourceCount:discList.length,extraAmountSum:rawAmountDiscountSum}:(discList.some(x=>x.hasAmt)?{mode:"amount",value:rawAmountDiscountSum,raw:discountAmtItem?.raw??"",sourceIndex:discountAmtItem?.index??-1,sourceCount:discList.length,extraAmountSum:0}:null),};}
-function isSummaryItemName(name){const n=nfc(String(name||"").trim());return SUMMARY_NAME_RE.test(n)||isSummaryByComposition(n)||isSafeColumnHeader(n);}
+function extractSummarySources(rawLines,onEntries){const entries=rawLines.map((raw,index)=>{const norm=_normSumLine(receiptDigits(raw));if(!norm||/^(?:vat|tax|service charge|discount)\s+(?:amount|rate|subtotal|items?)$/i.test(norm))return null;if(POST_DISCOUNT_TOTAL_RE.test(nfc(raw).trim()))return null;const pct=_extractPct(raw);const amt=_extractAmt(raw);if(isServiceChargeLine(norm))return{kind:"service_charge",raw,norm,index,pct:Number.isFinite(pct)?pct:null,amt:Number.isFinite(amt)?Math.abs(amt):null,hasPct:pct!=null,hasAmt:amt!=null};if(isVatLine(norm))return{kind:"vat",raw,norm,index,pct:Number.isFinite(pct)?pct:null,amt:Number.isFinite(amt)?Math.abs(amt):null,hasPct:pct!=null,hasAmt:amt!=null};if(isDiscountSummaryLine(raw,norm))return{kind:"discount",raw,norm,index,pct:Number.isFinite(pct)?pct:null,amt:Number.isFinite(amt)?Math.abs(amt):null,hasPct:pct!=null,hasAmt:amt!=null};return null;}).filter(Boolean);onEntries?.(entries);const scList=entries.filter(e=>e.kind==="service_charge");const vatList=entries.filter(e=>e.kind==="vat");const discList=entries.filter(e=>e.kind==="discount");const pickSCorVAT=list=>{if(!list.length)return null;const pctItem=list.find(x=>x.hasPct&&Number.isFinite(x.pct));if(pctItem)return{mode:"percent",value:pctItem.pct,raw:pctItem.raw,sourceIndex:pctItem.index,sourceCount:list.length};const amtItem=list.find(x=>x.hasAmt&&Number.isFinite(x.amt));if(amtItem)return{mode:"amount",value:amtItem.amt,raw:amtItem.raw,sourceIndex:amtItem.index,sourceCount:list.length};return null;};const discountPct=discList.find(x=>x.hasPct&&Number.isFinite(x.pct));const rawAmountDiscountSum=r2(discList.filter(x=>!x.hasPct&&x.hasAmt&&Number.isFinite(x.amt)).reduce((s,x)=>s+Math.abs(x.amt),0));const discountAmtItem=discList.find(x=>!x.hasPct&&x.hasAmt&&Number.isFinite(x.amt));return{service_charge:pickSCorVAT(scList),vat:pickSCorVAT(vatList),discount:discountPct?{mode:"percent",value:discountPct.pct,raw:discountPct.raw,sourceIndex:discountPct.index,sourceCount:discList.length,extraAmountSum:rawAmountDiscountSum}:(discList.some(x=>x.hasAmt)?{mode:"amount",value:rawAmountDiscountSum,raw:discountAmtItem?.raw??"",sourceIndex:discountAmtItem?.index??-1,sourceCount:discList.length,extraAmountSum:0}:null),};}
+function isSummaryItemName(name){const n=nfc(String(name||"").trim());if(/^(?:อาหาร|สินค้า)$/.test(n))return false;return SUMMARY_NAME_RE.test(n)||isSummaryByComposition(n)||isSafeColumnHeader(n);}
 function detectBillNumericStyle(rawLines){const joined=rawLines.join("\n");return{hasDecimal:/\b\d+\.\d{2}\b/.test(joined),hasThousands:/\b\d{1,3},\d{3}\b/.test(joined)};}
 const ADDR_MORPHEMES=new Set(["ถ","ถ.","ถนน","ซ","ซ.","ซอย","หมู่","ม.","แขวง","เขต","อำเภอ","อ.","ตำบล","ต.","จังหวัด","จ."]);
 const ADDR_PREFIX_MORPHEMES=["ถนน","แขวง","เขต","อำเภอ","ตำบล","จังหวัด"];
@@ -103,39 +193,57 @@ function findMetadataAnchorIndices(mergedLines){return new Set(mergedLines.map((
 function isNearMetadataAnchor(idx,anchors,win=5){for(let d=-win;d<=win;d++)if(anchors.has(idx+d))return true;return false;}
 function isLikelyAddressLine(line,lineIdx,billStyle,anchorIndices){const s=nfc(line).trim();const fiveDigit=(s.match(/\b\d{5}\b/g)||[]).find(t=>/^\d{5}$/.test(t));if(!fiveDigit)return false;let score=0;if(billStyle.hasDecimal||billStyle.hasThousands)score+=4;if(hasAddressMorpheme(s))score+=3;if(isNearMetadataAnchor(lineIdx,anchorIndices))score+=2;if(!/\b\d{1,3}(?:,\d{3})+\b|\b\d+\.\d{2}\b/.test(s))score+=1;return score>=4;}
 function applyZoneFilter(rows){const isAnchor=row=>!row.isDiscount&&!isSummaryItemName(row.itemName)&&row.confidence>=0.55&&row.itemName.trim().length>=2;const anchorIdxs=rows.reduce((acc,row,i)=>{if(isAnchor(row))acc.push(i);return acc;},[]);if(anchorIdxs.length<2){return rows.filter(row=>row.isDiscount||(isSummaryItemName(row.itemName)?false:(!row.isDiscount&&/^[\d\s.,\-]+$/.test(row.itemName.trim())?false:row.itemName.trim().length>=2)));}const first=anchorIdxs[0];const last=anchorIdxs[anchorIdxs.length-1];return rows.filter((row,idx)=>{if(row.isDiscount)return true;if(isSummaryItemName(row.itemName))return false;if(!row.isDiscount&&/^[\d\s.,\-]+$/.test(row.itemName.trim()))return false;if(idx>=first&&idx<=last)return true;return row.confidence>=0.50;});}
-function preprocessReceipt(rawText,sourceByClean){const normalized=normalizeText(rawText);const rawLines=normalized.split("\n").filter(Boolean);const collapsedLines=collapseVerticalOCR(rawLines);const mergedLines=mergeWrappedLines(collapsedLines);const billStyle=detectBillNumericStyle(rawLines);const anchorIndices=findMetadataAnchorIndices(mergedLines);const cleanLines=[];for(let idx=0;idx<mergedLines.length;idx++){const orig=mergedLines[idx];const origNfc=nfc(orig);if(!origNfc.trim())continue;if(SEPARATOR_RE.test(origNfc))continue;const trimmed=origNfc.trim();if(DATE_RE.test(trimmed)&&trimmed.split(/\s+/).length===1)continue;if(TIME_RE.test(trimmed)&&trimmed.split(/\s+/).length===1)continue;if(isMultiKVMetaLine(origNfc))continue;if(idx+1<mergedLines.length&&isMultiKVMetaLine(nfc(mergedLines[idx+1])))continue;if(isLikelyAddressLine(origNfc,idx,billStyle,anchorIndices))continue;if(DISCOUNT_RE.test(origNfc))continue;if(STRONG_SUMMARY_RE.test(origNfc.trim()))continue;if(WEAK_SUMMARY_RE.test(origNfc.trim())){const _afterKw=origNfc.trim().replace(WEAK_SUMMARY_RE,"").trim();if(!_afterKw)continue;if(/\d/.test(_afterKw)&&/^[%\d\s.,(),฿$\-]*$/.test(_afterKw))continue;}if(countSummaryKeywords(origNfc)>=2)continue;const clean=stripNoiseTokens(origNfc);if(!clean)continue;cleanLines.push(clean);if(sourceByClean){const lines=sourceByClean.get(clean)??[];lines.push(orig);sourceByClean.set(clean,lines);}}return{cleanLines,rawLines};}
-function recoverOmittedPriceLines(rawLines,rows,sourceByClean){
-  const represented=[...new Set(rows.map(row=>row.rawLine))].flatMap(clean=>sourceByClean.get(clean)??[]);
-  const recovered=[];
-  for(const line of rawLines){
-    if(!/\p{L}/u.test(line)||!/[\d,]+\.\d{2}$/.test(line))continue;
-    if(STRONG_SUMMARY_RE.test(line)||DISCOUNT_RE.test(line)||
-      /^(?:service|svc|sc\b|tax|grand|net|cash|รวม|ยอด|สุทธิ|โทร|tel|date|วันที่|เวลา|เลขที่|ถนน|ที่อยู่)/i.test(line))continue;
-    if(represented.some(source=>(' '+source+' ').includes(' '+line+' ')))continue;
-    const row=parseItemLine(line,null);
-    row.needsReview=true;
-    row.flags.push({type:'recovered_line',msg:'พบรายการที่ต้องตรวจสอบ'});
-    recovered.push(row);
+function preprocessReceipt(rawText){
+  const literalLines=String(rawText??'').split(/\r\n|\r|\n/);
+  const records=literalLines.map((line,i)=>({text:normalizeText(line),sourceLines:[i],table:line.includes('\t')})).filter(r=>r.text);
+  const rawLines=records.map(r=>r.text),merged=mergeWrappedLines(collapseVerticalOCR(records));
+  const billStyle=detectBillNumericStyle(rawLines),anchors=findMetadataAnchorIndices(merged.map(lineText));
+  let headers=null;
+  const headerAliases=[/^(?:qty|quantity|จำนวน)$/i,/^(?:unit price|price|ราคา|หน่วยละ)$/i,/^(?:total|line total|amount|ยอดรวม|จำนวนเงิน)$/i];
+  const origins=[];
+  for(let idx=0;idx<merged.length;idx++){
+    const record=merged[idx],orig=record.text,literal=record.sourceLines.map(i=>literalLines[i]).join('\n');
+    const cells=literal.split('\t').map(c=>normalizeText(c));
+    if(cells.length>1&&headerAliases.every(re=>cells.some(c=>re.test(c)))){headers=cells;continue;}
+    if(SEPARATOR_RE.test(orig)||DATE_RE.test(orig)||TIME_RE.test(orig)||isMultiKVMetaLine(orig)||idx+1<merged.length&&isMultiKVMetaLine(merged[idx+1].text)||isLikelyAddressLine(orig,idx,billStyle,anchors)||DISCOUNT_RE.test(orig)||isSummaryOrMetaLine(orig)&&! /^(?:อาหาร|สินค้า)\s+\d/.test(orig)||countSummaryKeywords(orig)>=2)continue;
+    const codeColumn=headers&&cells.length>1?headers.findIndex(c=>/^(?:code|item code|รหัส|no\.?)$/i.test(c)):-1;
+    const clean=stripNoiseTokens(codeColumn>=0?cells.filter((_,i)=>i!==codeColumn).join(' '):orig);if(!clean)continue;
+    const aligned=headers&&cells.length===headers.length&&headerAliases.every(re=>{const col=headers.findIndex(c=>re.test(c));return col>=0&&receiptNumber(cells[col],{quantity:re===headerAliases[0]})!==null;});
+    origins.push({...record,clean,rawLine:literal,itemCode:codeColumn>=0?cells[codeColumn]:null,labeledQty:!!aligned,tableAmbiguous:!!headers&&cells.length>1&&!aligned});
   }
-  return recovered;
+  return {cleanLines:origins.map(r=>r.clean),rawLines,origins,literalLines};
 }
 function parseReceipt(rawText,{recoverOmitted=false,onSummaryEntries}={}){
-  const sourceByClean=recoverOmitted?new Map():null;
-  const {cleanLines,rawLines}=preprocessReceipt(rawText,sourceByClean);
-  const summarySource=extractSummarySources(rawLines,onSummaryEntries);
-  let rows=cleanLines.filter(line=>quickClassify(line)!=="meta").map(line=>parseItemLine(line,null));
-  const ctx=buildContext(rows);
-  if(ctx)rows=rows.map(row=>{
-    if(row.confidence>=0.72)return row;
-    const revised=parseItemLine(row.rawLine,ctx);
-    return revised.confidence>row.confidence?revised:row;
+  const {origins,literalLines}=preprocessReceipt(rawText);
+  const summaryIssues={};
+  const summarySource=extractSummarySources(literalLines,entries=>{
+    onSummaryEntries?.(entries);
+    for(const e of entries)if(!e.hasPct&&!e.hasAmt)summaryIssues[e.kind]=fieldIssue(/\d/.test(e.raw)?'invalid':'missing','amount');
+    for(const e of entries){const value=e.hasPct?e.pct:e.amt;if(value!==null&&value>(e.hasPct?100:1e10))summaryIssues[e.kind]=fieldIssue('invalid',e.hasPct?'rate':'amount');}
   });
-  rows=applyZoneFilter(rows);
-  if(recoverOmitted)rows.push(...recoverOmittedPriceLines(rawLines,rows,sourceByClean));
-  return {rows,summarySource};
+  for(const kind of Object.keys(summaryIssues))if(summaryIssues[kind].reason==='invalid')summarySource[kind]=null;
+  let pairs=origins.filter(r=>quickClassify(r.clean)!=='meta'||/^(?:อาหาร|สินค้า)\s+\d/.test(r.clean)).map(origin=>({origin,row:parseItemLine(origin.clean,null,origin)}));
+  const ctx=buildContext(pairs.map(p=>p.row));
+  if(ctx)pairs=pairs.map(p=>{if(p.row.confidence>=0.72)return p;const row=parseItemLine(p.origin.clean,ctx,p.origin);return row.confidence>p.row.confidence?{...p,row}:p;});
+  let rows=applyZoneFilter(pairs.map(p=>p.row));
+  if(recoverOmitted){
+    const represented=new Set(rows.flatMap(r=>r.evidence.sourceLines));
+    for(let i=0;i<literalLines.length;i++){
+      const text=normalizeText(literalLines[i]);
+      if(represented.has(i)||! /\p{L}/u.test(text)||!/[\d,]+\.\d{2}$/.test(text)||STRONG_SUMMARY_RE.test(text)||DISCOUNT_RE.test(text)||/^(?:service|svc|sc\b|tax|grand|net|cash|รวม|ยอด|สุทธิ|โทร|tel|date|วันที่|เวลา|เลขที่|ถนน|ที่อยู่)/i.test(text))continue;
+      const row=parseItemLine(text,null,{sourceLines:[i],rawLine:literalLines[i]});row.needsReview=true;row.flags.push({type:'recovered_line',msg:'พบรายการที่ต้องตรวจสอบ'});rows.push(row);
+    }
+  }
+  rows.sort((a,b)=>(a.evidence.sourceLines[0]??Infinity)-(b.evidence.sourceLines[0]??Infinity));
+  return {rows,summarySource,summaryIssues};
 }
-function initializeSummaryEdits(subtotal,summarySource){const scSource=summarySource?.service_charge??null;const vatSource=summarySource?.vat??null;const discSource=summarySource?.discount??null;let scRate=null;if(scSource){if(scSource.mode==="percent")scRate=scSource.value;else scRate=subtotal>0?(scSource.value/subtotal)*100:0;}const scAmount=scRate!=null?r2(subtotal*scRate/100):0;const vatBase=r2(subtotal+scAmount);let vatRate=null;if(vatSource){if(vatSource.mode==="percent")vatRate=vatSource.value;else vatRate=vatBase>0?(vatSource.value/vatBase)*100:0;}return{service_charge_rate:scRate,vat_rate:vatRate,discount_rate:discSource!=null&&discSource.mode==="percent"?discSource.value:null,discount_amount:discSource!=null&&discSource.mode!=="percent"?discSource.value:null};}
-function resolveSummaryState(subtotal,summarySource,summaryEdits,discountCanonical){const scSource=summarySource?.service_charge??null;const vatSource=summarySource?.vat??null;const discSource=summarySource?.discount??null;const scRate=Number.isFinite(summaryEdits?.service_charge_rate)?summaryEdits.service_charge_rate:(scSource?(scSource.mode==="percent"?scSource.value:(subtotal>0?(scSource.value/subtotal)*100:0)):null);const scAmount=scRate!=null?r2(subtotal*scRate/100):0;const vatBase=r2(subtotal+scAmount);const vatRate=Number.isFinite(summaryEdits?.vat_rate)?summaryEdits.vat_rate:(vatSource?(vatSource.mode==="percent"?vatSource.value:(vatBase>0?(vatSource.value/vatBase)*100:0)):null);const vatAmount=vatRate!=null?r2(vatBase*vatRate/100):0;const discountBase=r2(subtotal+scAmount+vatAmount);const effectiveMode=discountCanonical??discSource?.mode??"amount";let discountAmount=0;let discountRate=0;if(effectiveMode==="rate"){let storedRate=summaryEdits?.discount_rate;if(!Number.isFinite(storedRate)&&discSource?.mode==="percent")storedRate=discSource.value;if(!Number.isFinite(storedRate))storedRate=0;discountRate=storedRate;discountAmount=r2(discountBase*discountRate/100);if(discSource?.extraAmountSum)discountAmount=r2(discountAmount+discSource.extraAmountSum);}else{let storedAmount=summaryEdits?.discount_amount;if(!Number.isFinite(storedAmount)&&discSource?.mode!=="percent")storedAmount=discSource?.value;if(!Number.isFinite(storedAmount))storedAmount=0;discountAmount=r2(storedAmount);discountRate=discountBase>0?r2((discountAmount/discountBase)*100):0;}const total=r2(subtotal+scAmount+vatAmount-discountAmount);return{subtotal,service_charge:{source:scSource,rate:scRate??0,amount:scAmount,mode:scSource?.mode??null},vat:{source:vatSource,rate:vatRate??0,amount:vatAmount,mode:vatSource?.mode??null},discount:{source:discSource,mode:effectiveMode,rate:discountRate,amount:discountAmount,extraAmountSum:discSource?.extraAmountSum||0},total};}
+function initializeSummaryEdits(subtotal,source){
+  return {service_charge_rate:source?.service_charge?.mode==='percent'?source.service_charge.value:null,
+    vat_rate:source?.vat?.mode==='percent'?source.vat.value:null,
+    discount_rate:source?.discount?.mode==='percent'?source.discount.value:null,
+    discount_amount:source?.discount?.mode==='amount'?source.discount.value:null};
+}
+function resolveSummaryState(subtotal,summarySource,summaryEdits,discountCanonical){const scSource=summarySource?.service_charge??null;const vatSource=summarySource?.vat??null;const discSource=summarySource?.discount??null;const scRate=Number.isFinite(summaryEdits?.service_charge_rate)?summaryEdits.service_charge_rate:(scSource?(scSource.mode==="percent"?scSource.value:(subtotal>0?(scSource.value/subtotal)*100:0)):null);const scAmount=scSource?.mode==='amount'&&!Number.isFinite(summaryEdits?.service_charge_rate)?scSource.value:scRate!=null?r2(subtotal*scRate/100):0;const vatBase=r2(subtotal+scAmount);const vatRate=Number.isFinite(summaryEdits?.vat_rate)?summaryEdits.vat_rate:(vatSource?(vatSource.mode==="percent"?vatSource.value:(vatBase>0?(vatSource.value/vatBase)*100:0)):null);const vatAmount=vatSource?.mode==='amount'&&!Number.isFinite(summaryEdits?.vat_rate)?vatSource.value:vatRate!=null?r2(vatBase*vatRate/100):0;const discountBase=r2(subtotal+scAmount+vatAmount);const effectiveMode=discountCanonical??discSource?.mode??"amount";let discountAmount=0;let discountRate=0;if(effectiveMode==="rate"){let storedRate=summaryEdits?.discount_rate;if(!Number.isFinite(storedRate)&&discSource?.mode==="percent")storedRate=discSource.value;if(!Number.isFinite(storedRate))storedRate=0;discountRate=storedRate;discountAmount=r2(discountBase*discountRate/100);if(discSource?.extraAmountSum)discountAmount=r2(discountAmount+discSource.extraAmountSum);}else{let storedAmount=summaryEdits?.discount_amount;if(!Number.isFinite(storedAmount)&&discSource?.mode!=="percent")storedAmount=discSource?.value;if(!Number.isFinite(storedAmount))storedAmount=0;discountAmount=r2(storedAmount);discountRate=discountBase>0?r2((discountAmount/discountBase)*100):0;}const total=r2(subtotal+scAmount+vatAmount-discountAmount);return{subtotal,service_charge:{source:scSource,rate:scRate??0,amount:scAmount,mode:scSource?.mode??null},vat:{source:vatSource,rate:vatRate??0,amount:vatAmount,mode:vatSource?.mode??null},discount:{source:discSource,mode:effectiveMode,rate:discountRate,amount:discountAmount,extraAmountSum:discSource?.extraAmountSum||0},total};}
 return {parseReceipt,getDerivedValues,initializeSummaryEdits,resolveSummaryState,mergeWrappedLines,normalizeText,preprocessReceipt,extractSummarySources,parseItemLine,parseDiscountLine};
 }
 export const {parseReceipt,getDerivedValues,initializeSummaryEdits,resolveSummaryState,mergeWrappedLines,normalizeText,preprocessReceipt,extractSummarySources,parseItemLine,parseDiscountLine} = createReceiptParser();

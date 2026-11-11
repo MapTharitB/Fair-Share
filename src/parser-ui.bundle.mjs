@@ -49,9 +49,9 @@ function formatPctForDisplay(rate) {
   const r = Math.round(rate * 100) / 100;
   return Number.isInteger(r) ? String(r) : r.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
-function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel = "") {
+function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel = "", issue = null) {
   const fields2 = [["rate", rate, "%"], ["amount", amount, "฿"]].map(([field, value, unit]) => `<div class="sum-field ${field === canonical ? "canonical" : "derived"}">
-      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" value="${esc(value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
+      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" aria-invalid="${issue?.editField === field ? "true" : "false"}" placeholder="0" value="${esc(issue?.editField === field ? issue.input ?? "" : value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
       <span class="sum-field-lbl" aria-hidden="true">${unit}</span>
     </div>`).join("");
   const responsiveLabel = shortLabel ? ` data-full-label="${label}" data-short-label="${shortLabel}"` : "";
@@ -61,15 +61,17 @@ function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel =
   </div>`;
 }
 function renderChargeCard(kind, label, view, shortLabel) {
-  return renderAdjustmentCard(kind, label, formatPctForDisplay(view.rate), formatMoneyDisplay(view.amount), "rate", shortLabel);
+  return renderAdjustmentCard(kind, label, view.rate === null ? "" : formatPctForDisplay(view.rate), view.amount === null ? "" : formatMoneyDisplay(view.amount), "rate", shortLabel, view.issue);
 }
 function renderDiscountCard(view) {
   return renderAdjustmentCard(
     "discount",
     "ส่วนลด",
-    formatPctForDisplay(view.rate),
-    formatMoney(Math.abs(view.amount)),
-    view.mode === "rate" ? "rate" : "amount"
+    view.rate === null ? "" : formatPctForDisplay(view.rate),
+    view.amount === null ? "" : formatMoney(Math.abs(view.amount)),
+    view.mode === "rate" ? "rate" : "amount",
+    "",
+    view.issue
   );
 }
 function flattenHtmlTable(html) {
@@ -257,647 +259,6 @@ function updateReceiptLayout() {
   updateSwapButtonAlignment();
   fitP2Numbers();
 }
-
-// src/receipt-parser.mjs
-function createReceiptParser({ createId = () => Math.random().toString(36).slice(2, 9) } = {}) {
-  const UNIT_WORDS = /* @__PURE__ */ new Set(["ขวด", "แก้ว", "จาน ", "ชาม", "ชิ้น", "ถ้วย", "ชุด", "แพ็ค", "กล่อง", "กระป๋อง", "โหล", "ถุง", "อัน", "ที่", "หัว", "ตัว", "กิโล", "กก", "ลิตร", "มล", "คู่", "แผ่น", "เส้น", "portion", "pcs", "pc", "set", "bottle", "glass", "can", "box", "cup", "bowl"]);
-  const r2 = (n) => Math.round(n * 100) / 100;
-  const uid2 = createId;
-  const stripPunct = (s) => String(s || "").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").trim();
-  function nfc(s) {
-    return String(s ?? "").normalize("NFC");
-  }
-  const SUMMARY_MORPHEMES_TH = ["ทั้งสิ้น", "ยอด", "รวม", "สุทธิ", "ราคา", "ภาษี", "เงิน", "ชำระ", "จ่าย", "ทอน", "ก่อน", "หลัง", "ค่า", "สินค้า", "ทั้ง", "หมด", "อาหาร"];
-  const SAFE_COLUMN_MORPHEMES = ["รายการสินค้า", "ราคาสินค้า", "จำนวนเงิน", "หน่วยละ", "รายการ", "สินค้า", "อาหาร", "จำนวน", "หน่วย", "ราคา", "รหัส", "ชิ้น"];
-  function coversBy(word, morphemeList) {
-    const n = word.length;
-    const reach = new Uint8Array(n + 1);
-    reach[0] = 1;
-    for (let i = 0; i < n; i++) {
-      if (!reach[i]) continue;
-      for (const m of morphemeList) {
-        if (i + m.length <= n && word.slice(i, i + m.length) === m) reach[i + m.length] = 1;
-      }
-    }
-    return reach[n] === 1;
-  }
-  function isSummaryByComposition(line) {
-    const s = nfc(String(line || "")).trim();
-    const words = s.replace(/[\d%.,฿$()\-:;/\\]+/g, " ").trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
-    return words.length > 0 && words.every((w) => coversBy(w, SUMMARY_MORPHEMES_TH));
-  }
-  const SAFE_PLUS_SUMMARY = [...SAFE_COLUMN_MORPHEMES, ...SUMMARY_MORPHEMES_TH];
-  const FIELD_LABEL_RE = /^(?:qty|quantity|จำนวน|price|ราคา|unit\s*price|หน่วยละ|line\s*total|จำนวนเงิน|amount|สินค้า|อาหาร|รายการ|รายการสินค้า|ราคาสินค้า|item\s*(?:id|no\.?)|no\.?|เลขที่|table|โต๊ะ|order|invoice|bill|receipt|ref|code|id|branch|สาขา|staff|cashier|พนักงาน|แคชเชียร์|ลูกค้า|customer|phone|tel|telephone|mobile|มือถือ|โทร|เบอร์|date|time|วันที่|เวลา|รหัส|ชิ้น|sku|covers|pax|guests|duration|event)$/i;
-  const DATE_RE = /^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/;
-  const TIME_RE = /^\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?$/;
-  const PHONE_RE = /^0\d[\d\s-]{7,9}$/;
-  const LONG_NUM_RE = /^\d{7,}$/;
-  const ALNUM_ID_RE = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9][A-Za-z0-9-]{5,}$/;
-  const SEPARATOR_RE = /^[-=*─━·•─═]{3,}$/;
-  const DISCOUNT_RE = /(?:^-\s*\d|ส่วนลด|ลดราคา|ลดพิเศษ|หักส่วนลด|discount|disc\.?|promo(?:tion|โมชั่น)?|coupon|คูปอง|voucher|วาวเชอร์|rebate)/i;
-  const POST_DISCOUNT_TOTAL_RE = /^(?:ยอด|รวม|net|total|ราคา)\S*(?:หลัง|after)/iu;
-  const KV_PAIR_RE = /\b([\p{L}][\p{L} ]{1,20}):\s*\S+/gu;
-  const KV_META_KEY_RE = /^(?:table|โต๊ะ|cover|covers|pax|guests|staff|cashier|แคชเชียร์|date|time|วันที่|เวลา|order|invoice|ref|duration|event|branch|สาขา|phone|tel|โทร|time\s*in|time\s*out|in|out)$/i;
-  function isMultiKVMetaLine(line) {
-    const matches = [...nfc(line).matchAll(KV_PAIR_RE)];
-    if (matches.length < 2) return false;
-    return matches.some((m) => KV_META_KEY_RE.test(m[1].trim()));
-  }
-  function isSafeColumnHeader(line) {
-    const s = nfc(String(line || "")).trim();
-    if (!/\p{L}/u.test(s)) return false;
-    const words = s.replace(/[\d%.,฿$€()\-:;/\\]+/g, " ").trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
-    if (!words.length) return false;
-    const isCovered = (w) => FIELD_LABEL_RE.test(w) || coversBy(w, SAFE_PLUS_SUMMARY);
-    const isSafe = (w) => FIELD_LABEL_RE.test(w) || coversBy(w, SAFE_COLUMN_MORPHEMES);
-    return words.every(isCovered) && words.some(isSafe);
-  }
-  const STRONG_SUMMARY_RE = /^(?:subtotal|sub\stotal|grand\stotal|net\stotal|total|amount\sdue|balance\sdue|balance|ยอดรวม|ยอดช(?:ำ|ํา)ระ|ยอดสุทธิ|ยอดรวมสุทธิ|ยอดรวมทั้งสิ้น|ยอดที่ต้องช(?:ำ|ํา)ระ|ยอดเงิน|รวมสุทธิ|รวมทั้งสิ้น|รวมเงิน|สุทธิ|ทั้งสิ้น|ราคารวม|ราคาสุทธิ|ก่อนภาษี|หลังภาษี|ภาษีมูลค่าเพิ่ม|ภาษี|เงินสด|เงินทอน|ทอน|รับเงิน|จ่ายเงิน|ช(?:ำ|ํา)ระเงิน|พร้อมเพย์|promptpay|prompt\spay|qr\scode|qr|credit\scard|debit\s*card|transfer|โอนเงิน|บัตรเครดิต|บัตรเดบิต|service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส|rounding|rounded|change|before\s+(?:vat|tax)|after\s+(?:vat|tax)|vat\s+(?:item|items|included|inclusive|exclusive|excl\.?|incl\.?|amount|exempt|zero|rate|subtotal|sub)|ex(?:cl(?:uding)?)?\.?\s*(?:vat|tax)|inc(?:l(?:uding)?)?\.?\s*(?:vat|tax)|vat|value\sadded\stax|visa|amex|american\s+express|jcb|union\s*pay|alipay|paypal|wechat(?:\s*pay)?|true\s+money|line\s+pay|grab\s+pay|shopeepay|shopee\s+pay|e[\s\-]?wallet|gift\s*(?:card|voucher)|master\s*card|rabbit\s*(?:card|pay)|discover\s*card|point\s*(?:redeem(?:ed)?|reward)|(?:ยอด|รวม|net|total|ราคา)\S*(?:หลัง|after)|ใบเสร็จ(?:รับเงิน)?|ใบก(?:ำ|ํา)กับภาษี(?:อย่างย่อ)?|ใบแจ้งหนี้|ใบสั่งซื้อ|tax\s+invoice|ใบเสนอราคา|quotation)(?=[\s%.,฿$\d()\-:]|$)/i;
-  const WEAK_SUMMARY_RE = /^(?:รวม|ยอด|tip|cash)(?=[\s%.,฿$\d()\-]|$)/i;
-  const MULTI_KW_SUMMARY_SET = ["สุทธิ", "ชำระ", "ส่วนลด", "รวม", "ยอด", "ราคา", "ภาษี", "vat", "tax", "total", "discount"];
-  const SUMMARY_NAME_RE = /^(?:subtotal|sub\stotal|grand\stotal|net\stotal|total|amount\sdue|balance\sdue|ยอดรวม|ยอดชำระ|ยอดสุทธิ|ยอดรวมสุทธิ|ยอดรวมทั้งสิ้น|ยอดที่ต้องชำระ|ยอดเงิน|รวมสุทธิ|รวมทั้งสิ้น|รวมเงิน|รวม|สุทธิ|ยอด|ทั้งสิ้น|ราคารวม|ราคาสุทธิ|ก่อนภาษี|หลังภาษี|เงินสด|เงินทอน|ทอน|รับเงิน|จ่าย|ชำระเงิน|พร้อมเพย์|promptpay|qr|qr\scode|credit\scard|debit\s*card|transfer|โอนเงิน|บัตรเครดิต|บัตรเดบิต|service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส|vat|ภาษีมูลค่าเพิ่ม|ภาษี|rounding|rounded|cash|change|balance|tip|before\s+(?:vat|tax)|after\s+(?:vat|tax)|vat\s+(?:item|items|included|inclusive|exclusive|excl\.?|incl\.?|amount|exempt|zero|rate|subtotal|sub)|ex(?:cl(?:uding)?)?\.?\s*(?:vat|tax)|inc(?:l(?:uding)?)?\.?\s*(?:vat|tax))$/i;
-  const TAX_SUBLABEL_RE = /^(?:item|items?|included|inclusive|exclusive|excl\.?|incl\.?|before|after|amount|rate|exempt|zero):?\s*/i;
-  function isSummaryOrMetaLine(line) {
-    const s = nfc(String(line || "").trim());
-    if (!s) return false;
-    if (isSafeColumnHeader(s)) return true;
-    if (STRONG_SUMMARY_RE.test(s)) return true;
-    if (isMultiKVMetaLine(s)) return true;
-    if (/^sc(?=[\s%.,\d]|$)/i.test(s)) {
-      const after = s.replace(/^sc\s*/i, "").trim();
-      if (after === "" || /\d/.test(after) && /^[%\d\s.,฿$()\-]*$/.test(after)) return true;
-    }
-    if (WEAK_SUMMARY_RE.test(s)) {
-      const afterKeyword = s.replace(WEAK_SUMMARY_RE, "").trim();
-      if (!afterKeyword) return true;
-      if (/\d/.test(afterKeyword) && /^[%\d\s.,(),฿$()\-]*$/.test(afterKeyword)) return true;
-      if (TAX_SUBLABEL_RE.test(afterKeyword)) {
-        const remainder = afterKeyword.replace(TAX_SUBLABEL_RE, "").trim();
-        if (!remainder || /\d/.test(remainder) && /^[%\d\s.,(),฿$()\-]*$/.test(remainder)) return true;
-      }
-    }
-    if (/\d/.test(s) && isSummaryByComposition(s)) return true;
-    return false;
-  }
-  function quickClassify(line) {
-    const s = nfc(String(line || "")).trim();
-    if (!s) return "empty";
-    if (isSummaryOrMetaLine(s)) return "meta";
-    return "item";
-  }
-  function normalizeText2(raw) {
-    return String(raw ?? "").normalize("NFC").replace(/\u00A0|\u3000|\uFEFF/g, " ").replace(/\t+/g, " ").replace(/\r/g, "").replace(/[，]/g, ",").replace(/[．｡。]/g, ".").split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
-  }
-  function looksComplete(line) {
-    const ts = String(line || "").trim().split(/\s+/);
-    return ts.length > 0 && /^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(ts[ts.length - 1]);
-  }
-  function collapseVerticalOCR(lines) {
-    const isPureNumericLine = (line) => {
-      const s = String(line ?? "").trim();
-      return /^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(s) || /^\d{1,2}$/.test(s);
-    };
-    const isCategoryHeaderCandidate = (line) => {
-      const s = String(line ?? "").trim();
-      return s.length > 0 && s.length < 30 && !/\d/.test(s);
-    };
-    let pureNumericCount = 0;
-    for (const line of lines) {
-      if (isSummaryOrMetaLine(line)) continue;
-      if (isPureNumericLine(line)) pureNumericCount++;
-    }
-    const numericRatio = lines.length ? pureNumericCount / lines.length : 0;
-    if (!(pureNumericCount >= 3 && numericRatio >= 0.2)) return lines;
-    const result = [];
-    let i = 0;
-    while (i < lines.length) {
-      const current = lines[i];
-      if (isPureNumericLine(current)) {
-        i++;
-        continue;
-      }
-      const nameParts = [];
-      const first = String(current ?? "").trim();
-      if (first) nameParts.push(first);
-      i++;
-      while (i < lines.length && !isPureNumericLine(lines[i]) && nameParts.length < 3) {
-        const part = String(lines[i] ?? "").trim();
-        if (part) nameParts.push(part);
-        i++;
-      }
-      const numericParts = [];
-      while (i < lines.length && isPureNumericLine(lines[i])) {
-        numericParts.push(String(lines[i] ?? "").trim());
-        i++;
-      }
-      if (!numericParts.length) {
-        if (isCategoryHeaderCandidate(nameParts[0] || "")) continue;
-        continue;
-      }
-      result.push([...nameParts, ...numericParts].join(" ").replace(/\s+/g, " ").trim());
-    }
-    return result;
-  }
-  function mergeWrappedLines2(lines) {
-    const out = [];
-    let i = 0;
-    let prevWasMeta = false;
-    while (i < lines.length) {
-      const cur = lines[i];
-      const curIsMeta = quickClassify(cur) === "meta";
-      if (curIsMeta || looksComplete(cur) || prevWasMeta) {
-        out.push(cur);
-        prevWasMeta = curIsMeta;
-        i++;
-        continue;
-      }
-      prevWasMeta = false;
-      const next = lines[i + 1] ?? null;
-      const after = lines[i + 2] ?? null;
-      if (next && quickClassify(next) !== "meta" && !looksComplete(next) && after && quickClassify(after) !== "meta" && looksComplete(after)) {
-        out.push(`${cur} ${next} ${after}`.replace(/\s+/g, " ").trim());
-        i += 3;
-        continue;
-      }
-      if (next && quickClassify(next) !== "meta" && /\d/.test(next)) {
-        out.push(`${cur} ${next}`.replace(/\s+/g, " ").trim());
-        i += 2;
-        continue;
-      }
-      out.push(cur);
-      i++;
-    }
-    return out;
-  }
-  function cleanToken(raw) {
-    return stripPunct(raw).replace(/,/g, "");
-  }
-  function isNoiseToken(raw) {
-    const s = cleanToken(raw);
-    if (!s) return true;
-    if (DATE_RE.test(s)) return true;
-    if (TIME_RE.test(s)) return true;
-    if (PHONE_RE.test(s)) return true;
-    if (LONG_NUM_RE.test(s)) return true;
-    if (ALNUM_ID_RE.test(s)) return true;
-    if (SEPARATOR_RE.test(raw)) return true;
-    if (FIELD_LABEL_RE.test(s)) return true;
-    return false;
-  }
-  function isSwallowLabel(raw) {
-    const s = cleanToken(raw).toLowerCase();
-    return /^(?:no\.?|เลขที่|table|โต๊ะ|phone|tel|telephone|mobile|มือถือ|โทร|เบอร์|qty|quantity|จำนวน|ราคา|price|unit|หน่วยละ|amount|จำนวนเงิน|subtotal|total|grand|net|ยอดรวม|ยอดชำระ|ยอดสุทธิ|รวมสุทธิ|รวม|สุทธิ|ยอด|ทั้งสิ้น|เงินสด|เงินทอน|ทอน|รับเงิน|ชำระเงิน|vat|ภาษี|order|invoice|bill|receipt|ref|id|code|date|time|วันที่|เวลา|สาขา|branch|staff|cashier|พนักงาน|แคชเชียร์|ลูกค้า|customer|cash|change|balance|tip|rounding)$/i.test(s);
-  }
-  function stripNoiseTokens(line) {
-    const tokens = nfc(String(line || "").trim()).split(/\s+/).filter(Boolean);
-    const kept = [];
-    let swallowNext = false;
-    for (let i = 0; i < tokens.length; i++) {
-      const raw = tokens[i];
-      const clean = cleanToken(raw);
-      if (!clean) continue;
-      if (/^(?:qty|quantity|จำนวน)$/i.test(clean) && /^\d{1,2}$/.test(tokens[i + 1] ?? "")) {
-        swallowNext = false;
-        continue;
-      }
-      if (isSwallowLabel(raw)) {
-        swallowNext = true;
-        continue;
-      }
-      if (swallowNext) {
-        if (/^(?:-?\d+(?:[.,]\d{1,2})?|0(?:[\s-]*\d){7,}|(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{2,})$/.test(clean)) {
-          swallowNext = false;
-          continue;
-        }
-        swallowNext = false;
-      }
-      if (isNoiseToken(raw)) continue;
-      kept.push(raw);
-    }
-    return kept.join(" ").replace(/\s+/g, " ").trim();
-  }
-  function tokenizeLine(line) {
-    return nfc(String(line || "").trim()).split(/\s+/).filter(Boolean).map((raw) => {
-      const clean = raw.replace(/,/g, "");
-      if (/^-?\d+(?:\.\d{1,2})?$/.test(clean)) {
-        const value = parseFloat(clean);
-        const isDecimal = raw.includes(".");
-        const hasThousandsSep = /\d,\d{3}/.test(raw);
-        return { type: "number", raw, value, isDecimal, hasThousandsSep, isInteger: Number.isInteger(value) && !isDecimal, isNegative: value < 0, isDefinitelyPrice: isDecimal || hasThousandsSep || Math.abs(value) > 999, couldBeQty: !isDecimal && !hasThousandsSep && Number.isInteger(value) && value >= 1 && value <= 99 };
-      }
-      if (UNIT_WORDS.has(stripPunct(raw))) return { type: "unit", raw };
-      return { type: "text", raw };
-    });
-  }
-  function scoreAssignment(lt, qt, up, tokens, ctx) {
-    let s = 0;
-    if (lt.isDecimal) s += 20;
-    if (lt.hasThousandsSep) s += 18;
-    if (lt.value > 999) s += 15;
-    else if (lt.value > 99) s += 10;
-    else if (lt.value > 20) s += 5;
-    else if (lt.value < 5) s -= 6;
-    if (lt.isInteger && !lt.isDecimal && !lt.hasThousandsSep) {
-      const hasTextToken = tokens.some((t) => t.type === "text" && /\p{L}/u.test(t.raw));
-      if (hasTextToken) {
-        if (lt.value >= 20 && lt.value <= 500) s += 6;
-        else if (lt.value >= 10 && lt.value <= 1e3) s += 3;
-      }
-    }
-    if (lt.i === tokens.length - 1) s += 8;
-    else if (lt.i >= tokens.length - 2) s += 3;
-    if (ctx) {
-      if (lt.value >= ctx.p10 * 0.4 && lt.value <= ctx.p90 * 2.5) s += 8;
-      else if (lt.value < ctx.p10 * 0.2 || lt.value > ctx.p90 * 5) s -= 5;
-    }
-    if (qt) {
-      if (qt.value < lt.value) s += 18;
-      else if (qt.value > lt.value) s -= 20;
-      if (qt.value <= 6) s += 10;
-      else if (qt.value <= 12) s += 5;
-      else if (qt.value <= 20) s += 2;
-      const hasAdjUnit = tokens[qt.i + 1]?.type === "unit" || tokens[qt.i - 1]?.type === "unit";
-      if (hasAdjUnit) s += 12;
-      const prevTxt = tokens[qt.i - 1]?.type === "text";
-      const nextTxt = tokens[qt.i + 1]?.type === "text";
-      if (prevTxt && nextTxt) s -= 28;
-      else if (prevTxt) s -= 2;
-      if (ctx) {
-        if (qt.value <= ctx.maxQty + 3) s += 5;
-        if (qt.value > ctx.maxQty * 3 + 5) s -= 8;
-      }
-    }
-    if (up && qt) {
-      const calc = r2(up.value * qt.value);
-      const diff = Math.abs(calc - lt.value);
-      if (diff < 0.01) s += 55;
-      else if (diff <= 1) s += 45;
-      else if (diff <= lt.value * 0.03) s += 20;
-      else s -= 30;
-      if (up.value <= lt.value) s += 5;
-      else s -= 8;
-      if (up.isDecimal) s += 3;
-    }
-    return s;
-  }
-  function findBestAssignment(tokens, ctx) {
-    const nums = tokens.map((t, i) => ({ ...t, i })).filter((t) => t.type === "number" && !t.isNegative);
-    if (!nums.length) return null;
-    if (nums.length === 1) {
-      const n = nums[0];
-      const sc = (n.isDefinitelyPrice ? 38 : n.value > 20 ? 25 : 10) + (n.i === tokens.length - 1 ? 8 : 0);
-      return { lt: n, qt: null, up: null, score: sc };
-    }
-    const candidates = [];
-    for (const lt of nums) {
-      candidates.push({ lt, qt: null, up: null, score: scoreAssignment(lt, null, null, tokens, ctx) });
-      for (const qt of nums.filter((n) => n !== lt && n.couldBeQty)) {
-        candidates.push({ lt, qt, up: null, score: scoreAssignment(lt, qt, null, tokens, ctx) });
-        for (const up of nums.filter((n) => n !== lt && n !== qt)) {
-          candidates.push({ lt, qt, up, score: scoreAssignment(lt, qt, up, tokens, ctx) });
-        }
-      }
-    }
-    candidates.sort((a, b) => b.score - a.score);
-    return candidates[0];
-  }
-  const ITEM_CODE_RE = /^([A-Z][A-Z0-9]{1,7}|\d{2,6})\s+(?=[^\d])/;
-  function buildItemRow(p) {
-    const qty = p.qty ?? null;
-    return { id: uid2(), rawLine: p.rawLine ?? "", lineType: "item", pattern: p.pattern ?? "unknown", itemCode: p.itemCode ?? null, itemName: p.itemName ?? "", qty: qty ?? 1, qtyWasNull: qty == null, unit: p.unit ?? null, priceSource: p.priceSource ?? "line_total", priceValue: p.priceValue ?? 0, confidence: p.confidence ?? 0.5, needsReview: (p.confidence ?? 0.5) < 0.72, isDiscount: false, discountAmount: null, flags: p.flags ?? [] };
-  }
-  function parseDiscountLine2(rawLine) {
-    const s = nfc(String(rawLine || "").trim());
-    const tokens = s.split(/\s+/);
-    let discountAmount = null;
-    for (const t of tokens) {
-      const v = parseFloat(t.replace(/,/g, "").replace(/^[(\-]+/, "").replace(/[)]+$/, ""));
-      if (isFinite(v) && v > 0) {
-        discountAmount = v;
-        break;
-      }
-    }
-    const isAmountToken = (t) => {
-      const c = t.replace(/,/g, "").replace(/^[(\-]+/, "").replace(/[)]+$/, "");
-      return /^\d+(?:\.\d{1,2})?$/.test(c) && parseFloat(c) > 0;
-    };
-    const label = tokens.filter((t) => !isAmountToken(t)).join(" ").replace(/^[-\s]+/, "").trim() || "ส่วนลด";
-    const hasPercent = /%/.test(s);
-    return { id: uid2(), rawLine, lineType: "discount", pattern: "discount", itemCode: null, itemName: label, qty: 1, qtyWasNull: false, unit: null, priceSource: "line_total", priceValue: -(discountAmount ?? 0), confidence: discountAmount != null ? 0.92 : 0.5, needsReview: false, isDiscount: true, discountType: hasPercent ? "percent" : "baht", discountAmount: discountAmount ?? 0, flags: [] };
-  }
-  function mismatchedPrintedRow(tokens, rawLine, itemCode) {
-    const [qty, unit, total] = tokens.slice(-3);
-    if (!qty?.couldBeQty || unit?.type !== "number" || unit.isNegative || total?.type !== "number" || total.isNegative || !(unit.isDefinitelyPrice || total.isDefinitelyPrice)) return null;
-    const name = tokens.slice(0, -3).map((t) => t.raw).join(" ");
-    if (!/\p{L}/u.test(name)) return null;
-    const calculated = Math.round(unit.value * 100) * qty.value;
-    if (calculated === Math.round(total.value * 100)) return null;
-    return buildItemRow({
-      rawLine,
-      itemCode,
-      itemName: name,
-      qty: qty.value,
-      priceValue: total.value,
-      confidence: 0.5,
-      pattern: "unit-qty-total",
-      flags: [{
-        type: "calc_mismatch",
-        msg: `ราคา ${unit.raw} × ${qty.raw} ไม่ตรงกับยอด ${total.raw} ในใบเสร็จ`
-      }]
-    });
-  }
-  function parseItemLine2(rawLine, ctx) {
-    const codeMatch = nfc(String(rawLine || "")).match(ITEM_CODE_RE);
-    const itemCode = codeMatch?.[1] ?? null;
-    const stripped = codeMatch ? rawLine.slice(codeMatch[0].length) : rawLine;
-    const tokens = tokenizeLine(stripped);
-    const printed = mismatchedPrintedRow(tokens, rawLine, itemCode);
-    if (printed) return printed;
-    const best = findBestAssignment(tokens, ctx);
-    if (!best) return buildItemRow({ rawLine, itemCode, itemName: stripped, confidence: 0.15, pattern: "text-only" });
-    const used = new Set([best.lt.i, best.qt?.i, best.up?.i].filter((x) => x != null));
-    let unit = null;
-    if (best.qt) {
-      const after = tokens[best.qt.i + 1];
-      const before = tokens[best.qt.i - 1];
-      if (after?.type === "unit") {
-        unit = stripPunct(after.raw);
-        used.add(best.qt.i + 1);
-      } else if (before?.type === "unit") {
-        unit = stripPunct(before.raw);
-        used.add(best.qt.i - 1);
-      }
-    }
-    const itemName = tokens.filter((_, i) => !used.has(i)).map((t) => t.raw).join(" ").trim() || stripped;
-    const flags = [];
-    if (best.up && best.qt) {
-      const calc = r2(best.up.value * best.qt.value);
-      if (Math.abs(calc - best.lt.value) > 1) flags.push({ type: "calc_mismatch", msg: `${best.up.value} x ${best.qt.value} = ${calc} != ${best.lt.value}` });
-    }
-    if (best.qt && best.qt.value >= best.lt.value) flags.push({ type: "qty_gte_price", msg: `qty(${best.qt.value}) >= price(${best.lt.value})` });
-    const conf = Math.min(Math.max(0.35 + best.score / 120, 0.2), 0.97);
-    let priceSource = "line_total";
-    let priceValue = best.lt.value;
-    if (best.up) {
-      priceSource = "unit_price";
-      priceValue = best.up.value;
-    } else if (best.qt && best.lt.i < best.qt.i) {
-      priceSource = "unit_price";
-    }
-    const pattern = best.up ? "unit-qty-total" : best.qt ? "item-qty-price" : "item-price-only";
-    return buildItemRow({ rawLine, itemCode, itemName, qty: best.qt?.value ?? null, unit, priceSource, priceValue, confidence: conf, flags, pattern });
-  }
-  function getDerivedValues2(row) {
-    const qty = row.qty || 1;
-    if (row.priceSource === "unit_price") return { unitPrice: row.priceValue, lineTotal: r2(row.priceValue * qty) };
-    return { lineTotal: row.priceValue, unitPrice: r2(row.priceValue / qty) };
-  }
-  function buildContext(rows) {
-    let hc = rows.filter((r) => !r.isDiscount && r.confidence >= 0.72);
-    if (hc.length < 2) hc = rows.filter((r) => !r.isDiscount && r.confidence >= 0.5);
-    if (hc.length < 2) return null;
-    const prices = hc.map((r) => getDerivedValues2(r).lineTotal).filter((v) => v > 0).sort((a, b) => a - b);
-    const qtys = hc.map((r) => r.qty);
-    const pct = (arr, p) => arr[Math.floor(arr.length * p)] ?? arr[arr.length - 1];
-    return { p10: pct(prices, 0.1), p25: pct(prices, 0.25), p75: pct(prices, 0.75), p90: pct(prices, 0.9), minPrice: prices[0], maxPrice: prices[prices.length - 1], maxQty: Math.max(...qtys) };
-  }
-  const _SC_STRONG = /^(?:service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส)(?=[\s%.,฿$\d]|$)/i;
-  const _VAT_STRONG = /^(?:vat|value\sadded\stax|ภาษีมูลค่าเพิ่ม)(?=[\s%.,฿$\d]|$)/i;
-  const _SC_WEAK = /^sc(?=[\s%.,\d]|$)/i;
-  const _VAT_WEAK = /^ภาษี(?=[\s%.,฿$\d]|$)/i;
-  function _normSumLine(s) {
-    return String(s || "").normalize("NFC").replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
-  }
-  function _extractPct(s) {
-    const m = String(s).match(/(\d[\d,]*(?:\.\d+)?)\s*%/);
-    return m ? Number(m[1].replace(/,/g, "")) : null;
-  }
-  function _extractAmt(s) {
-    const m = String(s).match(/(-?\d[\d,]*(?:\.\d{1,2})?)\s*$/);
-    return m ? parseFloat(m[1].replace(/,/g, "")) : null;
-  }
-  function countSummaryKeywords(line) {
-    const s = nfc(String(line || "")).toLowerCase();
-    let count = 0;
-    for (const kw of MULTI_KW_SUMMARY_SET) {
-      if (s.includes(kw)) {
-        count++;
-        if (count >= 2) return count;
-      }
-    }
-    return count;
-  }
-  function isServiceChargeLine(norm) {
-    return _SC_STRONG.test(norm) || _SC_WEAK.test(norm);
-  }
-  function isVatLine(norm) {
-    return _VAT_STRONG.test(norm) || _VAT_WEAK.test(norm);
-  }
-  function isDiscountSummaryLine(raw, norm) {
-    return DISCOUNT_RE.test(raw) || DISCOUNT_RE.test(norm);
-  }
-  function extractSummarySources2(rawLines, onEntries) {
-    const entries = rawLines.map((raw, index) => {
-      const norm = _normSumLine(raw);
-      if (!norm) return null;
-      if (POST_DISCOUNT_TOTAL_RE.test(nfc(raw).trim())) return null;
-      const pct = _extractPct(raw);
-      const amt = _extractAmt(raw);
-      if (isServiceChargeLine(norm)) return { kind: "service_charge", raw, norm, index, pct: Number.isFinite(pct) ? pct : null, amt: Number.isFinite(amt) ? Math.abs(amt) : null, hasPct: pct != null, hasAmt: amt != null };
-      if (isVatLine(norm)) return { kind: "vat", raw, norm, index, pct: Number.isFinite(pct) ? pct : null, amt: Number.isFinite(amt) ? Math.abs(amt) : null, hasPct: pct != null, hasAmt: amt != null };
-      if (isDiscountSummaryLine(raw, norm)) return { kind: "discount", raw, norm, index, pct: Number.isFinite(pct) ? pct : null, amt: Number.isFinite(amt) ? Math.abs(amt) : null, hasPct: pct != null, hasAmt: amt != null };
-      return null;
-    }).filter(Boolean);
-    onEntries?.(entries);
-    const scList = entries.filter((e) => e.kind === "service_charge");
-    const vatList = entries.filter((e) => e.kind === "vat");
-    const discList = entries.filter((e) => e.kind === "discount");
-    const pickSCorVAT = (list) => {
-      if (!list.length) return null;
-      const pctItem = list.find((x) => x.hasPct && Number.isFinite(x.pct));
-      if (pctItem) return { mode: "percent", value: pctItem.pct, raw: pctItem.raw, sourceIndex: pctItem.index, sourceCount: list.length };
-      const amtItem = list.find((x) => x.hasAmt && Number.isFinite(x.amt));
-      if (amtItem) return { mode: "amount", value: amtItem.amt, raw: amtItem.raw, sourceIndex: amtItem.index, sourceCount: list.length };
-      return null;
-    };
-    const discountPct = discList.find((x) => x.hasPct && Number.isFinite(x.pct));
-    const rawAmountDiscountSum = r2(discList.filter((x) => !x.hasPct && x.hasAmt && Number.isFinite(x.amt)).reduce((s, x) => s + Math.abs(x.amt), 0));
-    const discountAmtItem = discList.find((x) => !x.hasPct && x.hasAmt && Number.isFinite(x.amt));
-    return { service_charge: pickSCorVAT(scList), vat: pickSCorVAT(vatList), discount: discountPct ? { mode: "percent", value: discountPct.pct, raw: discountPct.raw, sourceIndex: discountPct.index, sourceCount: discList.length, extraAmountSum: rawAmountDiscountSum } : discList.some((x) => x.hasAmt) ? { mode: "amount", value: rawAmountDiscountSum, raw: discountAmtItem?.raw ?? "", sourceIndex: discountAmtItem?.index ?? -1, sourceCount: discList.length, extraAmountSum: 0 } : null };
-  }
-  function isSummaryItemName(name) {
-    const n = nfc(String(name || "").trim());
-    return SUMMARY_NAME_RE.test(n) || isSummaryByComposition(n) || isSafeColumnHeader(n);
-  }
-  function detectBillNumericStyle(rawLines) {
-    const joined = rawLines.join("\n");
-    return { hasDecimal: /\b\d+\.\d{2}\b/.test(joined), hasThousands: /\b\d{1,3},\d{3}\b/.test(joined) };
-  }
-  const ADDR_MORPHEMES = /* @__PURE__ */ new Set(["ถ", "ถ.", "ถนน", "ซ", "ซ.", "ซอย", "หมู่", "ม.", "แขวง", "เขต", "อำเภอ", "อ.", "ตำบล", "ต.", "จังหวัด", "จ."]);
-  const ADDR_PREFIX_MORPHEMES = ["ถนน", "แขวง", "เขต", "อำเภอ", "ตำบล", "จังหวัด"];
-  function hasAddressMorpheme(line) {
-    return nfc(line).split(/[\s,\/]+/).some((tok) => {
-      const t = stripPunct(tok);
-      if (ADDR_MORPHEMES.has(t)) return true;
-      return ADDR_PREFIX_MORPHEMES.some((m) => t.startsWith(m) && t.length > m.length);
-    });
-  }
-  const METADATA_ANCHOR_RE = /(?:โทร|tel|fax|phone|โทรศัพท์|ใบเสร็จ|receipt|invoice|s\/n#?|pos\s*id#?|เลขที่|order|bill|table|โต๊ะ|cashier|แคชเชียร์|วันที่|เวลา|date|time|\b0\d{8,9}\b)/i;
-  function findMetadataAnchorIndices(mergedLines) {
-    return new Set(mergedLines.map((l, i) => METADATA_ANCHOR_RE.test(nfc(l)) ? i : -1).filter((i) => i >= 0));
-  }
-  function isNearMetadataAnchor(idx, anchors, win = 5) {
-    for (let d = -win; d <= win; d++) if (anchors.has(idx + d)) return true;
-    return false;
-  }
-  function isLikelyAddressLine(line, lineIdx, billStyle, anchorIndices) {
-    const s = nfc(line).trim();
-    const fiveDigit = (s.match(/\b\d{5}\b/g) || []).find((t) => /^\d{5}$/.test(t));
-    if (!fiveDigit) return false;
-    let score = 0;
-    if (billStyle.hasDecimal || billStyle.hasThousands) score += 4;
-    if (hasAddressMorpheme(s)) score += 3;
-    if (isNearMetadataAnchor(lineIdx, anchorIndices)) score += 2;
-    if (!/\b\d{1,3}(?:,\d{3})+\b|\b\d+\.\d{2}\b/.test(s)) score += 1;
-    return score >= 4;
-  }
-  function applyZoneFilter(rows) {
-    const isAnchor = (row) => !row.isDiscount && !isSummaryItemName(row.itemName) && row.confidence >= 0.55 && row.itemName.trim().length >= 2;
-    const anchorIdxs = rows.reduce((acc, row, i) => {
-      if (isAnchor(row)) acc.push(i);
-      return acc;
-    }, []);
-    if (anchorIdxs.length < 2) {
-      return rows.filter((row) => row.isDiscount || (isSummaryItemName(row.itemName) ? false : !row.isDiscount && /^[\d\s.,\-]+$/.test(row.itemName.trim()) ? false : row.itemName.trim().length >= 2));
-    }
-    const first = anchorIdxs[0];
-    const last = anchorIdxs[anchorIdxs.length - 1];
-    return rows.filter((row, idx) => {
-      if (row.isDiscount) return true;
-      if (isSummaryItemName(row.itemName)) return false;
-      if (!row.isDiscount && /^[\d\s.,\-]+$/.test(row.itemName.trim())) return false;
-      if (idx >= first && idx <= last) return true;
-      return row.confidence >= 0.5;
-    });
-  }
-  function preprocessReceipt2(rawText, sourceByClean) {
-    const normalized = normalizeText2(rawText);
-    const rawLines = normalized.split("\n").filter(Boolean);
-    const collapsedLines = collapseVerticalOCR(rawLines);
-    const mergedLines = mergeWrappedLines2(collapsedLines);
-    const billStyle = detectBillNumericStyle(rawLines);
-    const anchorIndices = findMetadataAnchorIndices(mergedLines);
-    const cleanLines = [];
-    for (let idx = 0; idx < mergedLines.length; idx++) {
-      const orig = mergedLines[idx];
-      const origNfc = nfc(orig);
-      if (!origNfc.trim()) continue;
-      if (SEPARATOR_RE.test(origNfc)) continue;
-      const trimmed = origNfc.trim();
-      if (DATE_RE.test(trimmed) && trimmed.split(/\s+/).length === 1) continue;
-      if (TIME_RE.test(trimmed) && trimmed.split(/\s+/).length === 1) continue;
-      if (isMultiKVMetaLine(origNfc)) continue;
-      if (idx + 1 < mergedLines.length && isMultiKVMetaLine(nfc(mergedLines[idx + 1]))) continue;
-      if (isLikelyAddressLine(origNfc, idx, billStyle, anchorIndices)) continue;
-      if (DISCOUNT_RE.test(origNfc)) continue;
-      if (STRONG_SUMMARY_RE.test(origNfc.trim())) continue;
-      if (WEAK_SUMMARY_RE.test(origNfc.trim())) {
-        const _afterKw = origNfc.trim().replace(WEAK_SUMMARY_RE, "").trim();
-        if (!_afterKw) continue;
-        if (/\d/.test(_afterKw) && /^[%\d\s.,(),฿$\-]*$/.test(_afterKw)) continue;
-      }
-      if (countSummaryKeywords(origNfc) >= 2) continue;
-      const clean = stripNoiseTokens(origNfc);
-      if (!clean) continue;
-      cleanLines.push(clean);
-      if (sourceByClean) {
-        const lines = sourceByClean.get(clean) ?? [];
-        lines.push(orig);
-        sourceByClean.set(clean, lines);
-      }
-    }
-    return { cleanLines, rawLines };
-  }
-  function recoverOmittedPriceLines(rawLines, rows, sourceByClean) {
-    const represented = [...new Set(rows.map((row) => row.rawLine))].flatMap((clean) => sourceByClean.get(clean) ?? []);
-    const recovered = [];
-    for (const line of rawLines) {
-      if (!/\p{L}/u.test(line) || !/[\d,]+\.\d{2}$/.test(line)) continue;
-      if (STRONG_SUMMARY_RE.test(line) || DISCOUNT_RE.test(line) || /^(?:service|svc|sc\b|tax|grand|net|cash|รวม|ยอด|สุทธิ|โทร|tel|date|วันที่|เวลา|เลขที่|ถนน|ที่อยู่)/i.test(line)) continue;
-      if (represented.some((source) => (" " + source + " ").includes(" " + line + " "))) continue;
-      const row = parseItemLine2(line, null);
-      row.needsReview = true;
-      row.flags.push({ type: "recovered_line", msg: "พบรายการที่ต้องตรวจสอบ" });
-      recovered.push(row);
-    }
-    return recovered;
-  }
-  function parseReceipt2(rawText, { recoverOmitted = false, onSummaryEntries } = {}) {
-    const sourceByClean = recoverOmitted ? /* @__PURE__ */ new Map() : null;
-    const { cleanLines, rawLines } = preprocessReceipt2(rawText, sourceByClean);
-    const summarySource = extractSummarySources2(rawLines, onSummaryEntries);
-    let rows = cleanLines.filter((line) => quickClassify(line) !== "meta").map((line) => parseItemLine2(line, null));
-    const ctx = buildContext(rows);
-    if (ctx) rows = rows.map((row) => {
-      if (row.confidence >= 0.72) return row;
-      const revised = parseItemLine2(row.rawLine, ctx);
-      return revised.confidence > row.confidence ? revised : row;
-    });
-    rows = applyZoneFilter(rows);
-    if (recoverOmitted) rows.push(...recoverOmittedPriceLines(rawLines, rows, sourceByClean));
-    return { rows, summarySource };
-  }
-  function initializeSummaryEdits2(subtotal, summarySource) {
-    const scSource = summarySource?.service_charge ?? null;
-    const vatSource = summarySource?.vat ?? null;
-    const discSource = summarySource?.discount ?? null;
-    let scRate = null;
-    if (scSource) {
-      if (scSource.mode === "percent") scRate = scSource.value;
-      else scRate = subtotal > 0 ? scSource.value / subtotal * 100 : 0;
-    }
-    const scAmount = scRate != null ? r2(subtotal * scRate / 100) : 0;
-    const vatBase = r2(subtotal + scAmount);
-    let vatRate = null;
-    if (vatSource) {
-      if (vatSource.mode === "percent") vatRate = vatSource.value;
-      else vatRate = vatBase > 0 ? vatSource.value / vatBase * 100 : 0;
-    }
-    return { service_charge_rate: scRate, vat_rate: vatRate, discount_rate: discSource != null && discSource.mode === "percent" ? discSource.value : null, discount_amount: discSource != null && discSource.mode !== "percent" ? discSource.value : null };
-  }
-  function resolveSummaryState2(subtotal, summarySource, summaryEdits, discountCanonical) {
-    const scSource = summarySource?.service_charge ?? null;
-    const vatSource = summarySource?.vat ?? null;
-    const discSource = summarySource?.discount ?? null;
-    const scRate = Number.isFinite(summaryEdits?.service_charge_rate) ? summaryEdits.service_charge_rate : scSource ? scSource.mode === "percent" ? scSource.value : subtotal > 0 ? scSource.value / subtotal * 100 : 0 : null;
-    const scAmount = scRate != null ? r2(subtotal * scRate / 100) : 0;
-    const vatBase = r2(subtotal + scAmount);
-    const vatRate = Number.isFinite(summaryEdits?.vat_rate) ? summaryEdits.vat_rate : vatSource ? vatSource.mode === "percent" ? vatSource.value : vatBase > 0 ? vatSource.value / vatBase * 100 : 0 : null;
-    const vatAmount = vatRate != null ? r2(vatBase * vatRate / 100) : 0;
-    const discountBase = r2(subtotal + scAmount + vatAmount);
-    const effectiveMode = discountCanonical ?? discSource?.mode ?? "amount";
-    let discountAmount = 0;
-    let discountRate = 0;
-    if (effectiveMode === "rate") {
-      let storedRate = summaryEdits?.discount_rate;
-      if (!Number.isFinite(storedRate) && discSource?.mode === "percent") storedRate = discSource.value;
-      if (!Number.isFinite(storedRate)) storedRate = 0;
-      discountRate = storedRate;
-      discountAmount = r2(discountBase * discountRate / 100);
-      if (discSource?.extraAmountSum) discountAmount = r2(discountAmount + discSource.extraAmountSum);
-    } else {
-      let storedAmount = summaryEdits?.discount_amount;
-      if (!Number.isFinite(storedAmount) && discSource?.mode !== "percent") storedAmount = discSource?.value;
-      if (!Number.isFinite(storedAmount)) storedAmount = 0;
-      discountAmount = r2(storedAmount);
-      discountRate = discountBase > 0 ? r2(discountAmount / discountBase * 100) : 0;
-    }
-    const total = r2(subtotal + scAmount + vatAmount - discountAmount);
-    return { subtotal, service_charge: { source: scSource, rate: scRate ?? 0, amount: scAmount, mode: scSource?.mode ?? null }, vat: { source: vatSource, rate: vatRate ?? 0, amount: vatAmount, mode: vatSource?.mode ?? null }, discount: { source: discSource, mode: effectiveMode, rate: discountRate, amount: discountAmount, extraAmountSum: discSource?.extraAmountSum || 0 }, total };
-  }
-  return { parseReceipt: parseReceipt2, getDerivedValues: getDerivedValues2, initializeSummaryEdits: initializeSummaryEdits2, resolveSummaryState: resolveSummaryState2, mergeWrappedLines: mergeWrappedLines2, normalizeText: normalizeText2, preprocessReceipt: preprocessReceipt2, extractSummarySources: extractSummarySources2, parseItemLine: parseItemLine2, parseDiscountLine: parseDiscountLine2 };
-}
-var { parseReceipt, getDerivedValues, initializeSummaryEdits, resolveSummaryState, mergeWrappedLines, normalizeText, preprocessReceipt, extractSummarySources, parseItemLine, parseDiscountLine } = createReceiptParser();
 
 // src/item-allocation.mjs
 var SCALE = 1000000n;
@@ -1173,6 +534,733 @@ function calculate(bill) {
   return { subtotal, grand, unallocated, people: totals, groups, warnings: [...new Set(warnings)] };
 }
 
+// src/receipt-fields.mjs
+var RECEIPT_LIMIT = 1e5;
+var receiptDigits = (value) => String(value).replace(/[๐-๙]/g, (c) => String(c.charCodeAt(0) - 3664));
+function receiptNumber(input, { quantity = false, summary = false } = {}) {
+  if (typeof input !== "string" || input.length > RECEIPT_LIMIT) return null;
+  const text2 = receiptDigits(input).trim();
+  if (quantity) return /^\d+$/.test(text2) && Number(text2) >= 1 && Number(text2) <= 99 ? Number(text2) : null;
+  const decimal = summary ? "(?:\\.\\d+)?" : "(?:\\.\\d{1,2})?";
+  if (!new RegExp("^(?:\\d+|\\d{1,3}(?:,\\d{3})+)" + decimal + "$").test(text2)) return null;
+  try {
+    const value = summary ? Number(text2.replace(/,/g, "")) : cents(text2) / 100;
+    return Number.isFinite(value) && value <= 1e10 ? value : null;
+  } catch {
+    return null;
+  }
+}
+var emptyReceiptEvidence = () => ({ sourceLines: [], quantityText: null, unitText: null, totalText: null, unitCents: null, totalCents: null });
+var fieldIssue = (reason, editField, input = null) => ({ reason, editField, input });
+function receiptIssueMessage(issue) {
+  if (issue.rowId && issue.reason === "unverified") return "ฉบับร่างเดิมยังไม่ได้ยืนยันตัวเลข เช็กจำนวนและราคา แล้วกด Enter ในแต่ละช่อง";
+  if (issue.rowId) return issue.field === "qty" ? "เช็กจำนวน แล้วกด Enter เพื่อยืนยัน" : "กรอกราคา หรือใส่ 0 ถ้าฟรี แล้วกด Enter เพื่อยืนยัน";
+  if (issue.kind) return "เช็ก " + { vat: "VAT", service_charge: "Service Charge", discount: "ส่วนลด" }[issue.kind] + " แล้วกรอกค่า หรือใส่ 0";
+  return issue.message || "ยังไม่มีเมนูให้เพิ่ม";
+}
+
+// src/receipt-parser.mjs
+function getReceiptDiscrepancy(row) {
+  const e = row.evidence;
+  if (row.priceEdited || row.qty == null || e?.unitCents == null || e?.totalCents == null) return null;
+  const calculatedCents = e.unitCents * row.qty;
+  return calculatedCents === e.totalCents ? null : { calculatedCents, printedCents: e.totalCents };
+}
+function createReceiptParser({ createId = () => Math.random().toString(36).slice(2, 9) } = {}) {
+  const UNIT_WORDS = /* @__PURE__ */ new Set(["ขวด", "แก้ว", "จาน ", "ชาม", "ชิ้น", "ถ้วย", "ชุด", "แพ็ค", "กล่อง", "กระป๋อง", "โหล", "ถุง", "อัน", "ที่", "หัว", "ตัว", "กิโล", "กก", "ลิตร", "มล", "คู่", "แผ่น", "เส้น", "portion", "pcs", "pc", "set", "bottle", "glass", "can", "box", "cup", "bowl"]);
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const uid2 = createId;
+  const stripPunct = (s) => String(s || "").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").trim();
+  function nfc(s) {
+    return String(s ?? "").normalize("NFC");
+  }
+  const SUMMARY_MORPHEMES_TH = ["ทั้งสิ้น", "ยอด", "รวม", "สุทธิ", "ราคา", "ภาษี", "เงิน", "ชำระ", "จ่าย", "ทอน", "ก่อน", "หลัง", "ค่า", "สินค้า", "ทั้ง", "หมด", "อาหาร"];
+  const SAFE_COLUMN_MORPHEMES = ["รายการสินค้า", "ราคาสินค้า", "จำนวนเงิน", "หน่วยละ", "รายการ", "สินค้า", "อาหาร", "จำนวน", "หน่วย", "ราคา", "รหัส", "ชิ้น"];
+  function coversBy(word, morphemeList) {
+    const n = word.length;
+    const reach = new Uint8Array(n + 1);
+    reach[0] = 1;
+    for (let i = 0; i < n; i++) {
+      if (!reach[i]) continue;
+      for (const m of morphemeList) {
+        if (i + m.length <= n && word.slice(i, i + m.length) === m) reach[i + m.length] = 1;
+      }
+    }
+    return reach[n] === 1;
+  }
+  function isSummaryByComposition(line) {
+    const s = nfc(String(line || "")).trim();
+    const words = s.replace(/[\d%.,฿$()\-:;/\\]+/g, " ").trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
+    return words.length > 0 && words.every((w) => coversBy(w, SUMMARY_MORPHEMES_TH));
+  }
+  const SAFE_PLUS_SUMMARY = [...SAFE_COLUMN_MORPHEMES, ...SUMMARY_MORPHEMES_TH];
+  const FIELD_LABEL_RE = /^(?:qty|quantity|จำนวน|price|ราคา|unit\s*price|หน่วยละ|line\s*total|จำนวนเงิน|amount|สินค้า|อาหาร|รายการ|รายการสินค้า|ราคาสินค้า|item\s*(?:id|no\.?)|no\.?|เลขที่|table|โต๊ะ|order|invoice|bill|receipt|ref|code|id|branch|สาขา|staff|cashier|พนักงาน|แคชเชียร์|ลูกค้า|customer|phone|tel|telephone|mobile|มือถือ|โทร|เบอร์|date|time|วันที่|เวลา|รหัส|ชิ้น|sku|covers|pax|guests|duration|event)$/i;
+  const DATE_RE = /^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/;
+  const TIME_RE = /^\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?$/;
+  const PHONE_RE = /^0\d[\d\s-]{7,9}$/;
+  const LONG_NUM_RE = /^\d{7,}$/;
+  const ALNUM_ID_RE = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9][A-Za-z0-9-]{5,}$/;
+  const SEPARATOR_RE = /^[-=*─━·•─═]{3,}$/;
+  const DISCOUNT_RE = /(?:^-\s*\d|ส่วนลด|ลดราคา|ลดพิเศษ|หักส่วนลด|discount|disc\.?|promo(?:tion|โมชั่น)?|coupon|คูปอง|voucher|วาวเชอร์|rebate)/i;
+  const POST_DISCOUNT_TOTAL_RE = /^(?:ยอด|รวม|net|total|ราคา)\S*(?:หลัง|after)/iu;
+  const KV_PAIR_RE = /\b([\p{L}][\p{L} ]{1,20}):\s*\S+/gu;
+  const KV_META_KEY_RE = /^(?:table|โต๊ะ|cover|covers|pax|guests|staff|cashier|แคชเชียร์|date|time|วันที่|เวลา|order|invoice|ref|duration|event|branch|สาขา|phone|tel|โทร|time\s*in|time\s*out|in|out)$/i;
+  function isMultiKVMetaLine(line) {
+    const matches = [...nfc(line).matchAll(KV_PAIR_RE)];
+    if (matches.length < 2) return false;
+    return matches.some((m) => KV_META_KEY_RE.test(m[1].trim()));
+  }
+  function isSafeColumnHeader(line) {
+    const s = nfc(String(line || "")).trim();
+    if (!/\p{L}/u.test(s)) return false;
+    const words = s.replace(/[\d%.,฿$€()\-:;/\\]+/g, " ").trim().split(/\s+/).filter((w) => /\p{L}/u.test(w));
+    if (!words.length) return false;
+    const isCovered = (w) => FIELD_LABEL_RE.test(w) || coversBy(w, SAFE_PLUS_SUMMARY);
+    const isSafe = (w) => FIELD_LABEL_RE.test(w) || coversBy(w, SAFE_COLUMN_MORPHEMES);
+    return words.every(isCovered) && words.some(isSafe);
+  }
+  const STRONG_SUMMARY_RE = /^(?:subtotal|sub\stotal|grand\stotal|net\stotal|total|amount\sdue|balance\sdue|balance|ยอดรวม|ยอดช(?:ำ|ํา)ระ|ยอดสุทธิ|ยอดรวมสุทธิ|ยอดรวมทั้งสิ้น|ยอดที่ต้องช(?:ำ|ํา)ระ|ยอดเงิน|รวมสุทธิ|รวมทั้งสิ้น|รวมเงิน|สุทธิ|ทั้งสิ้น|ราคารวม|ราคาสุทธิ|ก่อนภาษี|หลังภาษี|ภาษีมูลค่าเพิ่ม|ภาษี|เงินสด|เงินทอน|ทอน|รับเงิน|จ่ายเงิน|ช(?:ำ|ํา)ระเงิน|พร้อมเพย์|promptpay|prompt\spay|qr\scode|qr|credit\scard|debit\s*card|transfer|โอนเงิน|บัตรเครดิต|บัตรเดบิต|service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส|rounding|rounded|change|before\s+(?:vat|tax)|after\s+(?:vat|tax)|vat\s+(?:item|items|included|inclusive|exclusive|excl\.?|incl\.?|amount|exempt|zero|rate|subtotal|sub)|ex(?:cl(?:uding)?)?\.?\s*(?:vat|tax)|inc(?:l(?:uding)?)?\.?\s*(?:vat|tax)|vat|value\sadded\stax|visa|amex|american\s+express|jcb|union\s*pay|alipay|paypal|wechat(?:\s*pay)?|true\s+money|line\s+pay|grab\s+pay|shopeepay|shopee\s+pay|e[\s\-]?wallet|gift\s*(?:card|voucher)|master\s*card|rabbit\s*(?:card|pay)|discover\s*card|point\s*(?:redeem(?:ed)?|reward)|(?:ยอด|รวม|net|total|ราคา)\S*(?:หลัง|after)|ใบเสร็จ(?:รับเงิน)?|ใบก(?:ำ|ํา)กับภาษี(?:อย่างย่อ)?|ใบแจ้งหนี้|ใบสั่งซื้อ|tax\s+invoice|ใบเสนอราคา|quotation)(?=[\s%.,฿$\d()\-:]|$)/i;
+  const WEAK_SUMMARY_RE = /^(?:รวม|ยอด|tip|cash)(?=[\s%.,฿$\d()\-]|$)/i;
+  const MULTI_KW_SUMMARY_SET = ["สุทธิ", "ชำระ", "ส่วนลด", "รวม", "ยอด", "ราคา", "ภาษี", "vat", "tax", "total", "discount"];
+  const SUMMARY_NAME_RE = /^(?:subtotal|sub\stotal|grand\stotal|net\stotal|total|amount\sdue|balance\sdue|ยอดรวม|ยอดชำระ|ยอดสุทธิ|ยอดรวมสุทธิ|ยอดรวมทั้งสิ้น|ยอดที่ต้องชำระ|ยอดเงิน|รวมสุทธิ|รวมทั้งสิ้น|รวมเงิน|รวม|สุทธิ|ยอด|ทั้งสิ้น|ราคารวม|ราคาสุทธิ|ก่อนภาษี|หลังภาษี|เงินสด|เงินทอน|ทอน|รับเงิน|จ่าย|ชำระเงิน|พร้อมเพย์|promptpay|qr|qr\scode|credit\scard|debit\s*card|transfer|โอนเงิน|บัตรเครดิต|บัตรเดบิต|service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส|vat|ภาษีมูลค่าเพิ่ม|ภาษี|rounding|rounded|cash|change|balance|tip|before\s+(?:vat|tax)|after\s+(?:vat|tax)|vat\s+(?:item|items|included|inclusive|exclusive|excl\.?|incl\.?|amount|exempt|zero|rate|subtotal|sub)|ex(?:cl(?:uding)?)?\.?\s*(?:vat|tax)|inc(?:l(?:uding)?)?\.?\s*(?:vat|tax))$/i;
+  const TAX_SUBLABEL_RE = /^(?:item|items?|included|inclusive|exclusive|excl\.?|incl\.?|before|after|amount|rate|exempt|zero):?\s*/i;
+  function isSummaryOrMetaLine(line) {
+    const s = nfc(String(line || "").trim());
+    if (!s) return false;
+    if (isSafeColumnHeader(s)) return true;
+    if (STRONG_SUMMARY_RE.test(s)) return true;
+    if (isMultiKVMetaLine(s)) return true;
+    if (/^sc(?=[\s%.,\d]|$)/i.test(s)) {
+      const after = s.replace(/^sc\s*/i, "").trim();
+      if (after === "" || /\d/.test(after) && /^[%\d\s.,฿$()\-]*$/.test(after)) return true;
+    }
+    if (WEAK_SUMMARY_RE.test(s)) {
+      const afterKeyword = s.replace(WEAK_SUMMARY_RE, "").trim();
+      if (!afterKeyword) return true;
+      if (/\d/.test(afterKeyword) && /^[%\d\s.,(),฿$()\-]*$/.test(afterKeyword)) return true;
+      if (TAX_SUBLABEL_RE.test(afterKeyword)) {
+        const remainder = afterKeyword.replace(TAX_SUBLABEL_RE, "").trim();
+        if (!remainder || /\d/.test(remainder) && /^[%\d\s.,(),฿$()\-]*$/.test(remainder)) return true;
+      }
+    }
+    if (/\d/.test(s) && isSummaryByComposition(s)) return true;
+    return false;
+  }
+  function quickClassify(line) {
+    const s = nfc(String(line || "")).trim();
+    if (!s) return "empty";
+    if (isSummaryOrMetaLine(s)) return "meta";
+    return "item";
+  }
+  function normalizeText2(raw) {
+    return receiptDigits(raw ?? "").replace(/\u0e4d\u0e32/g, "ำ").normalize("NFC").replace(/\u00A0|\u3000|\uFEFF/g, " ").replace(/\t+/g, " ").replace(/\r/g, "").replace(/[，]/g, ",").replace(/[．｡。]/g, ".").split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
+  }
+  function looksComplete(line) {
+    const ts = String(line || "").trim().split(/\s+/);
+    return ts.length > 0 && /^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(ts[ts.length - 1]);
+  }
+  const lineText = (line) => typeof line === "string" ? line : line.text;
+  function joinLines(lines) {
+    return typeof lines[0] === "string" ? lines.join(" ") : { text: lines.map(lineText).join(" "), sourceLines: lines.flatMap((l) => l.sourceLines) };
+  }
+  function collapseVerticalOCR(lines) {
+    const numeric = (line) => receiptNumber(lineText(line)) !== null;
+    const count = lines.filter((l) => !isSummaryOrMetaLine(lineText(l)) && numeric(l)).length;
+    if (count < 3 || count / lines.length < 0.2) return lines;
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      if (lines[i]?.table) {
+        out.push(lines[i++]);
+        continue;
+      }
+      if (numeric(lines[i])) {
+        i++;
+        continue;
+      }
+      const parts = [lines[i++]];
+      while (i < lines.length && !lines[i]?.table && !numeric(lines[i]) && parts.length < 3) parts.push(lines[i++]);
+      let n = 0;
+      while (i < lines.length && numeric(lines[i])) {
+        parts.push(lines[i++]);
+        n++;
+      }
+      if (n) out.push(joinLines(parts));
+    }
+    return out;
+  }
+  function mergeWrappedLines2(lines) {
+    const out = [];
+    let i = 0, prevWasMeta = false;
+    while (i < lines.length) {
+      const cur = lines[i], text2 = lineText(cur), meta = quickClassify(text2) === "meta";
+      if (cur?.table || meta || looksComplete(text2) || prevWasMeta) {
+        out.push(cur);
+        prevWasMeta = meta;
+        i++;
+        continue;
+      }
+      prevWasMeta = false;
+      const next = lines[i + 1], after = lines[i + 2];
+      if (next && !next?.table && quickClassify(lineText(next)) !== "meta" && !looksComplete(lineText(next)) && after && !after?.table && quickClassify(lineText(after)) !== "meta" && looksComplete(lineText(after))) {
+        out.push(joinLines([cur, next, after]));
+        i += 3;
+        continue;
+      }
+      if (next && !next?.table && quickClassify(lineText(next)) !== "meta" && /\d/.test(lineText(next))) {
+        out.push(joinLines([cur, next]));
+        i += 2;
+        continue;
+      }
+      out.push(cur);
+      i++;
+    }
+    return out;
+  }
+  function cleanToken(raw) {
+    return stripPunct(raw).replace(/,/g, "");
+  }
+  function isNoiseToken(raw) {
+    const s = cleanToken(raw);
+    if (!s) return true;
+    if (DATE_RE.test(s)) return true;
+    if (TIME_RE.test(s)) return true;
+    if (PHONE_RE.test(s)) return true;
+    if (LONG_NUM_RE.test(s)) return true;
+    if (ALNUM_ID_RE.test(s)) return true;
+    if (SEPARATOR_RE.test(raw)) return true;
+    if (FIELD_LABEL_RE.test(s)) return true;
+    return false;
+  }
+  function isSwallowLabel(raw) {
+    const s = cleanToken(raw).toLowerCase();
+    return /^(?:no\.?|เลขที่|table|โต๊ะ|phone|tel|telephone|mobile|มือถือ|โทร|เบอร์|qty|quantity|จำนวน|ราคา|price|unit|หน่วยละ|amount|จำนวนเงิน|subtotal|total|grand|net|ยอดรวม|ยอดชำระ|ยอดสุทธิ|รวมสุทธิ|รวม|สุทธิ|ยอด|ทั้งสิ้น|เงินสด|เงินทอน|ทอน|รับเงิน|ชำระเงิน|vat|ภาษี|order|invoice|bill|receipt|ref|id|code|date|time|วันที่|เวลา|สาขา|branch|staff|cashier|พนักงาน|แคชเชียร์|ลูกค้า|customer|cash|change|balance|tip|rounding)$/i.test(s);
+  }
+  function stripNoiseTokens(line) {
+    const tokens = nfc(String(line || "").trim()).split(/\s+/).filter(Boolean);
+    const kept = [];
+    let swallowNext = false;
+    for (let i = 0; i < tokens.length; i++) {
+      const raw = tokens[i];
+      const clean = cleanToken(raw);
+      if (!clean) continue;
+      if (/^(?:qty|quantity|จำนวน)$/i.test(clean) && /^\d{1,2}$/.test(tokens[i + 1] ?? "")) {
+        swallowNext = false;
+        continue;
+      }
+      if (/^(?:อาหาร|สินค้า)$/.test(clean) && /\d/.test(tokens[i + 1] ?? "")) {
+        kept.push(raw);
+        continue;
+      }
+      if (isSwallowLabel(raw)) {
+        swallowNext = true;
+        continue;
+      }
+      if (swallowNext) {
+        if (/^(?:-?\d+(?:[.,]\d{1,2})?|0(?:[\s-]*\d){7,}|(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{2,})$/.test(clean)) {
+          swallowNext = false;
+          continue;
+        }
+        swallowNext = false;
+      }
+      if (isNoiseToken(raw)) continue;
+      kept.push(raw);
+    }
+    return kept.join(" ").replace(/\s+/g, " ").trim();
+  }
+  function tokenizeLine(line) {
+    return nfc(String(line || "").trim()).split(/\s+/).filter(Boolean).map((raw) => {
+      const clean = raw.replace(/,/g, "");
+      if (/^-?\d+(?:\.\d{1,2})?$/.test(clean)) {
+        const value = parseFloat(clean);
+        const isDecimal = raw.includes(".");
+        const hasThousandsSep = /\d,\d{3}/.test(raw);
+        return { type: "number", raw, value, isDecimal, hasThousandsSep, isInteger: Number.isInteger(value) && !isDecimal, isNegative: value < 0, isDefinitelyPrice: isDecimal || hasThousandsSep || Math.abs(value) > 999, couldBeQty: !isDecimal && !hasThousandsSep && Number.isInteger(value) && value >= 1 && value <= 99 };
+      }
+      if (UNIT_WORDS.has(stripPunct(raw))) return { type: "unit", raw };
+      return { type: "text", raw };
+    });
+  }
+  function scoreAssignment(lt, qt, up, tokens, ctx) {
+    let s = 0;
+    if (lt.isDecimal) s += 20;
+    if (lt.hasThousandsSep) s += 18;
+    if (lt.value > 999) s += 15;
+    else if (lt.value > 99) s += 10;
+    else if (lt.value > 20) s += 5;
+    else if (lt.value < 5) s -= 6;
+    if (lt.isInteger && !lt.isDecimal && !lt.hasThousandsSep) {
+      const hasTextToken = tokens.some((t) => t.type === "text" && /\p{L}/u.test(t.raw));
+      if (hasTextToken) {
+        if (lt.value >= 20 && lt.value <= 500) s += 6;
+        else if (lt.value >= 10 && lt.value <= 1e3) s += 3;
+      }
+    }
+    if (lt.i === tokens.length - 1) s += 8;
+    else if (lt.i >= tokens.length - 2) s += 3;
+    if (ctx) {
+      if (lt.value >= ctx.p10 * 0.4 && lt.value <= ctx.p90 * 2.5) s += 8;
+      else if (lt.value < ctx.p10 * 0.2 || lt.value > ctx.p90 * 5) s -= 5;
+    }
+    if (qt) {
+      if (qt.value < lt.value) s += 18;
+      else if (qt.value > lt.value) s -= 20;
+      if (qt.value <= 6) s += 10;
+      else if (qt.value <= 12) s += 5;
+      else if (qt.value <= 20) s += 2;
+      const hasAdjUnit = tokens[qt.i + 1]?.type === "unit" || tokens[qt.i - 1]?.type === "unit";
+      if (hasAdjUnit) s += 12;
+      const prevTxt = tokens[qt.i - 1]?.type === "text";
+      const nextTxt = tokens[qt.i + 1]?.type === "text";
+      if (prevTxt && nextTxt) s -= 28;
+      else if (prevTxt) s -= 2;
+      if (ctx) {
+        if (qt.value <= ctx.maxQty + 3) s += 5;
+        if (qt.value > ctx.maxQty * 3 + 5) s -= 8;
+      }
+    }
+    if (up && qt) {
+      const calc = r2(up.value * qt.value);
+      const diff = Math.abs(calc - lt.value);
+      if (diff < 0.01) s += 55;
+      else if (diff <= 1) s += 45;
+      else if (diff <= lt.value * 0.03) s += 20;
+      else s -= 30;
+      if (up.value <= lt.value) s += 5;
+      else s -= 8;
+      if (up.isDecimal) s += 3;
+    }
+    return s;
+  }
+  function findBestAssignment(tokens, ctx) {
+    const nums = tokens.map((t, i) => ({ ...t, i })).filter((t) => t.type === "number" && !t.isNegative);
+    if (!nums.length) return null;
+    if (nums.length === 1) {
+      const n = nums[0];
+      const sc = (n.isDefinitelyPrice ? 38 : n.value > 20 ? 25 : 10) + (n.i === tokens.length - 1 ? 8 : 0);
+      return { lt: n, qt: null, up: null, score: sc };
+    }
+    const candidates = [];
+    for (const lt of nums) {
+      candidates.push({ lt, qt: null, up: null, score: scoreAssignment(lt, null, null, tokens, ctx) });
+      for (const qt of nums.filter((n) => n !== lt && n.couldBeQty)) {
+        candidates.push({ lt, qt, up: null, score: scoreAssignment(lt, qt, null, tokens, ctx) });
+        for (const up of nums.filter((n) => n !== lt && n !== qt)) {
+          candidates.push({ lt, qt, up, score: scoreAssignment(lt, qt, up, tokens, ctx) });
+        }
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0];
+  }
+  const ITEM_CODE_RE = /^([A-Z][A-Z0-9]{1,7})\s+(?=[^\d])/;
+  function buildItemRow(p) {
+    const missing2 = p.priceValue == null, issues = { ...p.issues ?? {} };
+    if (missing2 && !issues.price) issues.price = fieldIssue("missing", p.priceSource ?? "line_total");
+    return {
+      id: uid2(),
+      rawLine: p.rawLine ?? "",
+      lineType: "item",
+      pattern: p.pattern ?? "unknown",
+      itemCode: p.itemCode ?? null,
+      itemName: p.itemName ?? "",
+      qty: Object.hasOwn(p, "qty") ? p.qty : 1,
+      qtyWasNull: !Object.hasOwn(p, "qty"),
+      unit: p.unit ?? null,
+      priceSource: p.priceSource ?? "line_total",
+      priceValue: p.priceValue ?? null,
+      confidence: p.confidence ?? 0.5,
+      needsReview: (p.confidence ?? 0.5) < 0.72,
+      isDiscount: false,
+      discountAmount: null,
+      flags: p.flags ?? [],
+      evidence: p.evidence ?? emptyReceiptEvidence(),
+      issues,
+      priceEdited: false
+    };
+  }
+  function parseDiscountLine2(rawLine) {
+    const s = nfc(String(rawLine || "").trim());
+    const tokens = s.split(/\s+/);
+    let discountAmount = null;
+    for (const t of tokens) {
+      const v = parseFloat(t.replace(/,/g, "").replace(/^[(\-]+/, "").replace(/[)]+$/, ""));
+      if (isFinite(v) && v > 0) {
+        discountAmount = v;
+        break;
+      }
+    }
+    const isAmountToken = (t) => {
+      const c = t.replace(/,/g, "").replace(/^[(\-]+/, "").replace(/[)]+$/, "");
+      return /^\d+(?:\.\d{1,2})?$/.test(c) && parseFloat(c) > 0;
+    };
+    const label = tokens.filter((t) => !isAmountToken(t)).join(" ").replace(/^[-\s]+/, "").trim() || "ส่วนลด";
+    const hasPercent = /%/.test(s);
+    return { id: uid2(), rawLine, lineType: "discount", pattern: "discount", itemCode: null, itemName: label, qty: 1, qtyWasNull: false, unit: null, priceSource: "line_total", priceValue: -(discountAmount ?? 0), confidence: discountAmount != null ? 0.92 : 0.5, needsReview: false, isDiscount: true, discountType: hasPercent ? "percent" : "baht", discountAmount: discountAmount ?? 0, flags: [] };
+  }
+  function parseItemLine2(line, ctx, origin) {
+    const literal = origin?.rawLine ?? line;
+    const codeMatch = nfc(line).match(ITEM_CODE_RE), itemCode = origin?.itemCode ?? codeMatch?.[1] ?? null;
+    const stripped = codeMatch ? line.slice(codeMatch[0].length) : line;
+    const tokens = tokenizeLine(stripped);
+    const literalTokens = literal.match(/\S+/g) ?? [];
+    let cursor = 0;
+    for (const t of tokens) {
+      while (cursor < literalTokens.length && normalizeText2(literalTokens[cursor]) !== t.raw) cursor++;
+      t.literal = literalTokens[cursor++] ?? null;
+    }
+    const evidence = emptyReceiptEvidence();
+    evidence.sourceLines = origin?.sourceLines ?? [];
+    const identify = (key, t) => {
+      if (!t) return;
+      evidence[key + "Text"] = t.literal;
+      if (key !== "quantity") evidence[key + "Cents"] = t.literal && receiptNumber(t.literal) !== null ? Math.round(receiptNumber(t.literal) * 100) : null;
+    };
+    const row = (p) => {
+      const r = buildItemRow({ rawLine: literal, itemCode, evidence, ...p });
+      if (origin?.tableAmbiguous && r.priceValue !== null) {
+        r.priceSource = "line_total";
+        r.priceValue = tokens.at(-1)?.value ?? r.priceValue;
+        r.issues.price = fieldIssue("ambiguous", "line_total");
+      }
+      const proof = r.priceSource === "unit_price" ? evidence.unitCents : evidence.totalCents;
+      if (r.priceValue !== null && proof === null && !r.issues.price) {
+        r.priceValue = null;
+        r.issues.price = fieldIssue("invalid", r.priceSource);
+      }
+      return r;
+    };
+    const price = (t) => t && receiptNumber(t.raw) !== null;
+    const substantive = (ts) => ts.some((t) => /\p{L}/u.test(t.raw));
+    const last = tokens.at(-1), prefix = tokens.slice(0, -1);
+    if (!price(last)) {
+      const numeric = last && /^[+-]?\d[\d,.]*$/.test(last.raw);
+      if (numeric) identify("total", last);
+      const qty = prefix.find((t) => t.couldBeQty);
+      if (qty) identify("quantity", qty);
+      return row({ itemName: stripped, qty: qty?.value ?? 1, confidence: 0.15, pattern: "unread-price", issues: { price: fieldIssue(numeric ? "invalid" : "missing", "line_total") } });
+    }
+    identify("total", last);
+    const [qt, up, lt] = tokens.slice(-3), nameTokens = tokens.slice(0, -3);
+    if (qt?.couldBeQty && price(up) && price(lt) && substantive(nameTokens)) {
+      identify("quantity", qt);
+      identify("unit", up);
+      const exact = Math.round(up.value * 100) * qt.value === Math.round(lt.value * 100);
+      const labeled = origin?.labeledQty || /\b(?:qty|quantity)\b|จำนวน/i.test(literal);
+      const ambiguousRole = nameTokens.at(-1)?.type === "number";
+      const bare = !up.isDefinitelyPrice && !lt.isDefinitelyPrice && !exact && !labeled;
+      return row({
+        itemName: nameTokens.map((t) => t.raw).join(" "),
+        qty: qt.value,
+        priceSource: exact && !ambiguousRole ? "unit_price" : "line_total",
+        priceValue: exact && !ambiguousRole ? up.value : lt.value,
+        confidence: exact ? 0.97 : 0.5,
+        pattern: "unit-qty-total",
+        issues: { ...bare ? { qty: fieldIssue("ambiguous", "qty") } : {}, ...ambiguousRole ? { price: fieldIssue("ambiguous", "line_total") } : {} },
+        flags: exact ? [] : [{ type: "calc_mismatch", msg: `ราคา ${up.literal ?? up.raw} × ${qt.literal ?? qt.raw} ไม่ตรงกับยอด ${lt.literal ?? lt.raw} ในใบเสร็จ` }]
+      });
+    }
+    const leading = prefix[0]?.type === "number" && substantive(prefix.slice(1));
+    const fractional = prefix.at(-1)?.type === "number" && !prefix.at(-1).isInteger;
+    if (leading && !origin?.labeledQty || fractional) {
+      identify("quantity", leading ? prefix[0] : prefix.at(-1));
+      return row({ itemName: prefix.map((t) => t.raw).join(" "), qty: null, priceValue: last.value, issues: { qty: fieldIssue("ambiguous", "qty") }, pattern: "ambiguous-quantity" });
+    }
+    const quantity = prefix.at(-1), simpleName = prefix.slice(0, -1);
+    const nameNumbers = simpleName.every((t, i) => t.type !== "number" || simpleName[i - 1]?.type === "text" && simpleName[i + 1]?.type === "text");
+    if (quantity?.couldBeQty && substantive(simpleName) && nameNumbers) {
+      identify("quantity", quantity);
+      return row({
+        itemName: simpleName.map((t) => t.raw).join(" "),
+        qty: quantity.value,
+        priceValue: last.value,
+        confidence: 0.8,
+        pattern: "item-qty-price",
+        flags: quantity.value >= last.value ? [{ type: "qty_gte_price", msg: `qty(${quantity.value}) >= price(${last.value})` }] : []
+      });
+    }
+    const internalNumber = prefix.findIndex((t) => t.type === "number");
+    if (internalNumber > 0 && prefix.slice(internalNumber + 1).some((t) => t.type === "text")) return row({ itemName: prefix.map((t) => t.raw).join(" "), priceValue: last.value, confidence: 0.8, pattern: "named-number" });
+    const best = findBestAssignment(tokens, ctx);
+    if (!best) return row({ itemName: stripped });
+    const used = new Set([best.lt.i, best.qt?.i, best.up?.i].filter((v) => v != null));
+    let unit = null;
+    if (best.qt) {
+      for (const i of [best.qt.i + 1, best.qt.i - 1]) if (tokens[i]?.type === "unit") {
+        unit = stripPunct(tokens[i].raw);
+        used.add(i);
+        break;
+      }
+    }
+    const name = tokens.filter((_, i) => !used.has(i)).map((t) => t.raw).join(" ") || stripped;
+    const numberCount = tokens.filter((t) => t.type === "number").length;
+    const ambiguous = numberCount > 3 || numberCount > 2 && !best.up;
+    identify("quantity", best.qt);
+    if (best.up) identify("unit", best.up);
+    let source = best.up || best.qt && best.lt.i < best.qt.i ? "unit_price" : "line_total", value = best.up?.value ?? best.lt.value;
+    if (source === "unit_price" && !best.up) {
+      identify("unit", best.lt);
+      evidence.totalText = null;
+      evidence.totalCents = null;
+    }
+    const mismatch = best.up && best.qt && Math.round(best.up.value * 100) * best.qt.value !== Math.round(best.lt.value * 100);
+    if (best.up) {
+      identify("total", best.lt);
+      if (mismatch) {
+        source = "line_total";
+        value = best.lt.value;
+      }
+    }
+    const issues = ambiguous ? { price: fieldIssue("ambiguous", "line_total") } : {};
+    if (ambiguous) {
+      source = "line_total";
+      value = last.value;
+    }
+    return row({ itemName: name, unit, qty: best.qt?.value ?? 1, flags: [...best.qt && best.qt.value >= best.lt.value ? [{ type: "qty_gte_price", msg: `qty(${best.qt.value}) >= price(${best.lt.value})` }] : [], ...mismatch ? [{ type: "calc_mismatch", msg: `ราคา ${best.up.literal ?? best.up.raw} × ${best.qt.literal ?? best.qt.raw} ไม่ตรงกับยอด ${best.lt.literal ?? best.lt.raw} ในใบเสร็จ` }] : []], priceSource: source, priceValue: value, confidence: Math.min(Math.max(0.35 + best.score / 120, 0.2), 0.97), issues, pattern: best.up ? "unit-qty-total" : best.qt ? "item-qty-price" : "item-price-only" });
+  }
+  function getDerivedValues2(row) {
+    const qty = row.qty, value = row.priceValue;
+    if (value === null) return { unitPrice: null, lineTotal: null };
+    if (row.priceSource === "unit_price") return { unitPrice: value, lineTotal: qty == null ? null : r2(value * qty) };
+    return { lineTotal: value, unitPrice: qty == null ? null : r2(value / qty) };
+  }
+  function buildContext(rows) {
+    const known = rows.filter((r) => r.qty !== null && r.priceValue !== null && !Object.keys(r.issues ?? {}).length);
+    let hc = known.filter((r) => !r.isDiscount && r.confidence >= 0.72);
+    if (hc.length < 2) hc = known.filter((r) => !r.isDiscount && r.confidence >= 0.5);
+    if (hc.length < 2) return null;
+    const prices = hc.map((r) => getDerivedValues2(r).lineTotal).filter((v) => v > 0).sort((a, b) => a - b);
+    const qtys = hc.map((r) => r.qty);
+    const pct = (arr, p) => arr[Math.floor(arr.length * p)] ?? arr[arr.length - 1];
+    return { p10: pct(prices, 0.1), p25: pct(prices, 0.25), p75: pct(prices, 0.75), p90: pct(prices, 0.9), minPrice: prices[0], maxPrice: prices[prices.length - 1], maxQty: Math.max(...qtys) };
+  }
+  const _SC_STRONG = /^(?:service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส)(?=[\s%.,฿$\d]|$)/i;
+  const _VAT_STRONG = /^(?:vat|value\sadded\stax|ภาษีมูลค่าเพิ่ม)(?=[\s%.,฿$\d]|$)/i;
+  const _SC_WEAK = /^sc(?=[\s%.,\d]|$)/i;
+  const _VAT_WEAK = /^ภาษี(?=[\s%.,฿$\d]|$)/i;
+  function _normSumLine(s) {
+    return String(s || "").normalize("NFC").replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+  function _adjustmentTail(s) {
+    return receiptDigits(s).replace(_SC_STRONG, "").replace(_VAT_STRONG, "").replace(_SC_WEAK, "").replace(_VAT_WEAK, "").replace(/^(?:discount|disc\.?|ส่วนลด|ลดราคา|ลดพิเศษ|หักส่วนลด)\s*/i, "").trim();
+  }
+  function _extractPct(s) {
+    const m = _adjustmentTail(s).match(/(?:^|\s)(\S+?)\s*%/);
+    return m ? receiptNumber(m[1], { summary: true }) : null;
+  }
+  function _extractAmt(s) {
+    let token = _adjustmentTail(s).split(/\s+/).at(-1);
+    if (DISCOUNT_RE.test(s)) token = token.replace(/^-/, "");
+    return receiptNumber(token);
+  }
+  function countSummaryKeywords(line) {
+    const s = nfc(String(line || "")).toLowerCase();
+    let count = 0;
+    for (const kw of MULTI_KW_SUMMARY_SET) {
+      if (s.includes(kw)) {
+        count++;
+        if (count >= 2) return count;
+      }
+    }
+    return count;
+  }
+  function isServiceChargeLine(norm) {
+    return _SC_STRONG.test(norm) || _SC_WEAK.test(norm);
+  }
+  function isVatLine(norm) {
+    return _VAT_STRONG.test(norm) || _VAT_WEAK.test(norm);
+  }
+  function isDiscountSummaryLine(raw, norm) {
+    return DISCOUNT_RE.test(raw) || DISCOUNT_RE.test(norm);
+  }
+  function extractSummarySources2(rawLines, onEntries) {
+    const entries = rawLines.map((raw, index) => {
+      const norm = _normSumLine(receiptDigits(raw));
+      if (!norm || /^(?:vat|tax|service charge|discount)\s+(?:amount|rate|subtotal|items?)$/i.test(norm)) return null;
+      if (POST_DISCOUNT_TOTAL_RE.test(nfc(raw).trim())) return null;
+      const pct = _extractPct(raw);
+      const amt = _extractAmt(raw);
+      if (isServiceChargeLine(norm)) return { kind: "service_charge", raw, norm, index, pct: Number.isFinite(pct) ? pct : null, amt: Number.isFinite(amt) ? Math.abs(amt) : null, hasPct: pct != null, hasAmt: amt != null };
+      if (isVatLine(norm)) return { kind: "vat", raw, norm, index, pct: Number.isFinite(pct) ? pct : null, amt: Number.isFinite(amt) ? Math.abs(amt) : null, hasPct: pct != null, hasAmt: amt != null };
+      if (isDiscountSummaryLine(raw, norm)) return { kind: "discount", raw, norm, index, pct: Number.isFinite(pct) ? pct : null, amt: Number.isFinite(amt) ? Math.abs(amt) : null, hasPct: pct != null, hasAmt: amt != null };
+      return null;
+    }).filter(Boolean);
+    onEntries?.(entries);
+    const scList = entries.filter((e) => e.kind === "service_charge");
+    const vatList = entries.filter((e) => e.kind === "vat");
+    const discList = entries.filter((e) => e.kind === "discount");
+    const pickSCorVAT = (list) => {
+      if (!list.length) return null;
+      const pctItem = list.find((x) => x.hasPct && Number.isFinite(x.pct));
+      if (pctItem) return { mode: "percent", value: pctItem.pct, raw: pctItem.raw, sourceIndex: pctItem.index, sourceCount: list.length };
+      const amtItem = list.find((x) => x.hasAmt && Number.isFinite(x.amt));
+      if (amtItem) return { mode: "amount", value: amtItem.amt, raw: amtItem.raw, sourceIndex: amtItem.index, sourceCount: list.length };
+      return null;
+    };
+    const discountPct = discList.find((x) => x.hasPct && Number.isFinite(x.pct));
+    const rawAmountDiscountSum = r2(discList.filter((x) => !x.hasPct && x.hasAmt && Number.isFinite(x.amt)).reduce((s, x) => s + Math.abs(x.amt), 0));
+    const discountAmtItem = discList.find((x) => !x.hasPct && x.hasAmt && Number.isFinite(x.amt));
+    return { service_charge: pickSCorVAT(scList), vat: pickSCorVAT(vatList), discount: discountPct ? { mode: "percent", value: discountPct.pct, raw: discountPct.raw, sourceIndex: discountPct.index, sourceCount: discList.length, extraAmountSum: rawAmountDiscountSum } : discList.some((x) => x.hasAmt) ? { mode: "amount", value: rawAmountDiscountSum, raw: discountAmtItem?.raw ?? "", sourceIndex: discountAmtItem?.index ?? -1, sourceCount: discList.length, extraAmountSum: 0 } : null };
+  }
+  function isSummaryItemName(name) {
+    const n = nfc(String(name || "").trim());
+    if (/^(?:อาหาร|สินค้า)$/.test(n)) return false;
+    return SUMMARY_NAME_RE.test(n) || isSummaryByComposition(n) || isSafeColumnHeader(n);
+  }
+  function detectBillNumericStyle(rawLines) {
+    const joined = rawLines.join("\n");
+    return { hasDecimal: /\b\d+\.\d{2}\b/.test(joined), hasThousands: /\b\d{1,3},\d{3}\b/.test(joined) };
+  }
+  const ADDR_MORPHEMES = /* @__PURE__ */ new Set(["ถ", "ถ.", "ถนน", "ซ", "ซ.", "ซอย", "หมู่", "ม.", "แขวง", "เขต", "อำเภอ", "อ.", "ตำบล", "ต.", "จังหวัด", "จ."]);
+  const ADDR_PREFIX_MORPHEMES = ["ถนน", "แขวง", "เขต", "อำเภอ", "ตำบล", "จังหวัด"];
+  function hasAddressMorpheme(line) {
+    return nfc(line).split(/[\s,\/]+/).some((tok) => {
+      const t = stripPunct(tok);
+      if (ADDR_MORPHEMES.has(t)) return true;
+      return ADDR_PREFIX_MORPHEMES.some((m) => t.startsWith(m) && t.length > m.length);
+    });
+  }
+  const METADATA_ANCHOR_RE = /(?:โทร|tel|fax|phone|โทรศัพท์|ใบเสร็จ|receipt|invoice|s\/n#?|pos\s*id#?|เลขที่|order|bill|table|โต๊ะ|cashier|แคชเชียร์|วันที่|เวลา|date|time|\b0\d{8,9}\b)/i;
+  function findMetadataAnchorIndices(mergedLines) {
+    return new Set(mergedLines.map((l, i) => METADATA_ANCHOR_RE.test(nfc(l)) ? i : -1).filter((i) => i >= 0));
+  }
+  function isNearMetadataAnchor(idx, anchors, win = 5) {
+    for (let d = -win; d <= win; d++) if (anchors.has(idx + d)) return true;
+    return false;
+  }
+  function isLikelyAddressLine(line, lineIdx, billStyle, anchorIndices) {
+    const s = nfc(line).trim();
+    const fiveDigit = (s.match(/\b\d{5}\b/g) || []).find((t) => /^\d{5}$/.test(t));
+    if (!fiveDigit) return false;
+    let score = 0;
+    if (billStyle.hasDecimal || billStyle.hasThousands) score += 4;
+    if (hasAddressMorpheme(s)) score += 3;
+    if (isNearMetadataAnchor(lineIdx, anchorIndices)) score += 2;
+    if (!/\b\d{1,3}(?:,\d{3})+\b|\b\d+\.\d{2}\b/.test(s)) score += 1;
+    return score >= 4;
+  }
+  function applyZoneFilter(rows) {
+    const isAnchor = (row) => !row.isDiscount && !isSummaryItemName(row.itemName) && row.confidence >= 0.55 && row.itemName.trim().length >= 2;
+    const anchorIdxs = rows.reduce((acc, row, i) => {
+      if (isAnchor(row)) acc.push(i);
+      return acc;
+    }, []);
+    if (anchorIdxs.length < 2) {
+      return rows.filter((row) => row.isDiscount || (isSummaryItemName(row.itemName) ? false : !row.isDiscount && /^[\d\s.,\-]+$/.test(row.itemName.trim()) ? false : row.itemName.trim().length >= 2));
+    }
+    const first = anchorIdxs[0];
+    const last = anchorIdxs[anchorIdxs.length - 1];
+    return rows.filter((row, idx) => {
+      if (row.isDiscount) return true;
+      if (isSummaryItemName(row.itemName)) return false;
+      if (!row.isDiscount && /^[\d\s.,\-]+$/.test(row.itemName.trim())) return false;
+      if (idx >= first && idx <= last) return true;
+      return row.confidence >= 0.5;
+    });
+  }
+  function preprocessReceipt2(rawText) {
+    const literalLines = String(rawText ?? "").split(/\r\n|\r|\n/);
+    const records = literalLines.map((line, i) => ({ text: normalizeText2(line), sourceLines: [i], table: line.includes("	") })).filter((r) => r.text);
+    const rawLines = records.map((r) => r.text), merged = mergeWrappedLines2(collapseVerticalOCR(records));
+    const billStyle = detectBillNumericStyle(rawLines), anchors = findMetadataAnchorIndices(merged.map(lineText));
+    let headers = null;
+    const headerAliases = [/^(?:qty|quantity|จำนวน)$/i, /^(?:unit price|price|ราคา|หน่วยละ)$/i, /^(?:total|line total|amount|ยอดรวม|จำนวนเงิน)$/i];
+    const origins = [];
+    for (let idx = 0; idx < merged.length; idx++) {
+      const record = merged[idx], orig = record.text, literal = record.sourceLines.map((i) => literalLines[i]).join("\n");
+      const cells = literal.split("	").map((c) => normalizeText2(c));
+      if (cells.length > 1 && headerAliases.every((re) => cells.some((c) => re.test(c)))) {
+        headers = cells;
+        continue;
+      }
+      if (SEPARATOR_RE.test(orig) || DATE_RE.test(orig) || TIME_RE.test(orig) || isMultiKVMetaLine(orig) || idx + 1 < merged.length && isMultiKVMetaLine(merged[idx + 1].text) || isLikelyAddressLine(orig, idx, billStyle, anchors) || DISCOUNT_RE.test(orig) || isSummaryOrMetaLine(orig) && !/^(?:อาหาร|สินค้า)\s+\d/.test(orig) || countSummaryKeywords(orig) >= 2) continue;
+      const codeColumn = headers && cells.length > 1 ? headers.findIndex((c) => /^(?:code|item code|รหัส|no\.?)$/i.test(c)) : -1;
+      const clean = stripNoiseTokens(codeColumn >= 0 ? cells.filter((_, i) => i !== codeColumn).join(" ") : orig);
+      if (!clean) continue;
+      const aligned = headers && cells.length === headers.length && headerAliases.every((re) => {
+        const col = headers.findIndex((c) => re.test(c));
+        return col >= 0 && receiptNumber(cells[col], { quantity: re === headerAliases[0] }) !== null;
+      });
+      origins.push({ ...record, clean, rawLine: literal, itemCode: codeColumn >= 0 ? cells[codeColumn] : null, labeledQty: !!aligned, tableAmbiguous: !!headers && cells.length > 1 && !aligned });
+    }
+    return { cleanLines: origins.map((r) => r.clean), rawLines, origins, literalLines };
+  }
+  function parseReceipt2(rawText, { recoverOmitted = false, onSummaryEntries } = {}) {
+    const { origins, literalLines } = preprocessReceipt2(rawText);
+    const summaryIssues = {};
+    const summarySource = extractSummarySources2(literalLines, (entries) => {
+      onSummaryEntries?.(entries);
+      for (const e of entries) if (!e.hasPct && !e.hasAmt) summaryIssues[e.kind] = fieldIssue(/\d/.test(e.raw) ? "invalid" : "missing", "amount");
+      for (const e of entries) {
+        const value = e.hasPct ? e.pct : e.amt;
+        if (value !== null && value > (e.hasPct ? 100 : 1e10)) summaryIssues[e.kind] = fieldIssue("invalid", e.hasPct ? "rate" : "amount");
+      }
+    });
+    for (const kind of Object.keys(summaryIssues)) if (summaryIssues[kind].reason === "invalid") summarySource[kind] = null;
+    let pairs = origins.filter((r) => quickClassify(r.clean) !== "meta" || /^(?:อาหาร|สินค้า)\s+\d/.test(r.clean)).map((origin) => ({ origin, row: parseItemLine2(origin.clean, null, origin) }));
+    const ctx = buildContext(pairs.map((p) => p.row));
+    if (ctx) pairs = pairs.map((p) => {
+      if (p.row.confidence >= 0.72) return p;
+      const row = parseItemLine2(p.origin.clean, ctx, p.origin);
+      return row.confidence > p.row.confidence ? { ...p, row } : p;
+    });
+    let rows = applyZoneFilter(pairs.map((p) => p.row));
+    if (recoverOmitted) {
+      const represented = new Set(rows.flatMap((r) => r.evidence.sourceLines));
+      for (let i = 0; i < literalLines.length; i++) {
+        const text2 = normalizeText2(literalLines[i]);
+        if (represented.has(i) || !/\p{L}/u.test(text2) || !/[\d,]+\.\d{2}$/.test(text2) || STRONG_SUMMARY_RE.test(text2) || DISCOUNT_RE.test(text2) || /^(?:service|svc|sc\b|tax|grand|net|cash|รวม|ยอด|สุทธิ|โทร|tel|date|วันที่|เวลา|เลขที่|ถนน|ที่อยู่)/i.test(text2)) continue;
+        const row = parseItemLine2(text2, null, { sourceLines: [i], rawLine: literalLines[i] });
+        row.needsReview = true;
+        row.flags.push({ type: "recovered_line", msg: "พบรายการที่ต้องตรวจสอบ" });
+        rows.push(row);
+      }
+    }
+    rows.sort((a, b) => (a.evidence.sourceLines[0] ?? Infinity) - (b.evidence.sourceLines[0] ?? Infinity));
+    return { rows, summarySource, summaryIssues };
+  }
+  function initializeSummaryEdits2(subtotal, source) {
+    return {
+      service_charge_rate: source?.service_charge?.mode === "percent" ? source.service_charge.value : null,
+      vat_rate: source?.vat?.mode === "percent" ? source.vat.value : null,
+      discount_rate: source?.discount?.mode === "percent" ? source.discount.value : null,
+      discount_amount: source?.discount?.mode === "amount" ? source.discount.value : null
+    };
+  }
+  function resolveSummaryState2(subtotal, summarySource, summaryEdits, discountCanonical) {
+    const scSource = summarySource?.service_charge ?? null;
+    const vatSource = summarySource?.vat ?? null;
+    const discSource = summarySource?.discount ?? null;
+    const scRate = Number.isFinite(summaryEdits?.service_charge_rate) ? summaryEdits.service_charge_rate : scSource ? scSource.mode === "percent" ? scSource.value : subtotal > 0 ? scSource.value / subtotal * 100 : 0 : null;
+    const scAmount = scSource?.mode === "amount" && !Number.isFinite(summaryEdits?.service_charge_rate) ? scSource.value : scRate != null ? r2(subtotal * scRate / 100) : 0;
+    const vatBase = r2(subtotal + scAmount);
+    const vatRate = Number.isFinite(summaryEdits?.vat_rate) ? summaryEdits.vat_rate : vatSource ? vatSource.mode === "percent" ? vatSource.value : vatBase > 0 ? vatSource.value / vatBase * 100 : 0 : null;
+    const vatAmount = vatSource?.mode === "amount" && !Number.isFinite(summaryEdits?.vat_rate) ? vatSource.value : vatRate != null ? r2(vatBase * vatRate / 100) : 0;
+    const discountBase = r2(subtotal + scAmount + vatAmount);
+    const effectiveMode = discountCanonical ?? discSource?.mode ?? "amount";
+    let discountAmount = 0;
+    let discountRate = 0;
+    if (effectiveMode === "rate") {
+      let storedRate = summaryEdits?.discount_rate;
+      if (!Number.isFinite(storedRate) && discSource?.mode === "percent") storedRate = discSource.value;
+      if (!Number.isFinite(storedRate)) storedRate = 0;
+      discountRate = storedRate;
+      discountAmount = r2(discountBase * discountRate / 100);
+      if (discSource?.extraAmountSum) discountAmount = r2(discountAmount + discSource.extraAmountSum);
+    } else {
+      let storedAmount = summaryEdits?.discount_amount;
+      if (!Number.isFinite(storedAmount) && discSource?.mode !== "percent") storedAmount = discSource?.value;
+      if (!Number.isFinite(storedAmount)) storedAmount = 0;
+      discountAmount = r2(storedAmount);
+      discountRate = discountBase > 0 ? r2(discountAmount / discountBase * 100) : 0;
+    }
+    const total = r2(subtotal + scAmount + vatAmount - discountAmount);
+    return { subtotal, service_charge: { source: scSource, rate: scRate ?? 0, amount: scAmount, mode: scSource?.mode ?? null }, vat: { source: vatSource, rate: vatRate ?? 0, amount: vatAmount, mode: vatSource?.mode ?? null }, discount: { source: discSource, mode: effectiveMode, rate: discountRate, amount: discountAmount, extraAmountSum: discSource?.extraAmountSum || 0 }, total };
+  }
+  return { parseReceipt: parseReceipt2, getDerivedValues: getDerivedValues2, initializeSummaryEdits: initializeSummaryEdits2, resolveSummaryState: resolveSummaryState2, mergeWrappedLines: mergeWrappedLines2, normalizeText: normalizeText2, preprocessReceipt: preprocessReceipt2, extractSummarySources: extractSummarySources2, parseItemLine: parseItemLine2, parseDiscountLine: parseDiscountLine2 };
+}
+var { parseReceipt, getDerivedValues, initializeSummaryEdits, resolveSummaryState, mergeWrappedLines, normalizeText, preprocessReceipt, extractSummarySources, parseItemLine, parseDiscountLine } = createReceiptParser();
+
 // src/receipt-draft.mjs
 function receiptSummary(subtotal, source, edits, mode = "amount") {
   return resolveSummaryState(subtotal, source, edits, mode);
@@ -1190,17 +1278,67 @@ function receiptReviewSummary(subtotal, source, edits, mode, treatment) {
 }
 var clone = (value) => structuredClone(value);
 function reviewSubtotal(review) {
-  const subtotal = review.rows.filter((row) => !row.isDiscount).reduce((sum, row) => sum + getDerivedValues(row).lineTotal, 0);
-  return Math.round(subtotal * 100) / 100;
+  const subtotal = review.rows.filter((row) => !row.isDiscount).reduce((sum, row) => {
+    if (row.priceValue == null || row.priceSource === "unit_price" && row.qty == null) return sum;
+    try {
+      return sum + itemTotal({ priceSource: row.priceSource, quantity: row.qty, priceCents: cents(String(row.priceValue)) });
+    } catch {
+      return sum;
+    }
+  }, 0);
+  return subtotal / 100;
+}
+var plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+var fail = () => {
+  throw Error("ข้อมูลฉบับร่างไม่ถูกต้อง เก็บฉบับร่างไว้แล้วตรวจสอบอีกครั้ง");
+};
+function validateIssues(issues, summary = false) {
+  if (!plain(issues)) fail();
+  for (const [key, issue] of Object.entries(issues)) {
+    if (!(summary ? ["service_charge", "vat", "discount"] : ["qty", "price"]).includes(key) || !plain(issue) || !["missing", "ambiguous", "invalid", "unverified"].includes(issue.reason) || !(summary ? ["rate", "amount"] : key === "qty" ? ["qty"] : ["unit_price", "line_total"]).includes(issue.editField) || issue.input !== null && (typeof issue.input !== "string" || issue.input.length > RECEIPT_LIMIT)) fail();
+  }
+}
+function validateEvidence(row, lines) {
+  const e = row.evidence;
+  if (!plain(e) || !Array.isArray(e.sourceLines) || typeof row.rawLine !== "string" || row.rawLine.length > RECEIPT_LIMIT || typeof row.priceEdited !== "boolean") fail();
+  const indices = e.sourceLines;
+  if (indices.some((v, i) => !Number.isInteger(v) || v < 0 || v >= lines.length || i > 0 && v <= indices[i - 1])) fail();
+  if (indices.length && indices.map((i) => lines[i]).join("\n") !== row.rawLine) fail();
+  for (const [token, money2] of [["quantityText", null], ["unitText", "unitCents"], ["totalText", "totalCents"]]) {
+    if (e[token] !== null && (typeof e[token] !== "string" || e[token].length > RECEIPT_LIMIT || !row.rawLine.includes(e[token]))) fail();
+    if (money2) {
+      const value = e[money2];
+      if (value !== null && (!Number.isSafeInteger(value) || value < 0 || value > 1e12 || e[token] === null || receiptNumber(e[token]) === null || cents(String(receiptNumber(e[token]))) !== value)) fail();
+    }
+  }
 }
 function validateReview(review) {
   if (typeof review.raw !== "string" || review.raw.length > 1e5 || !Array.isArray(review.rows) || review.rows.length > 1e4) throw Error("เปิดฉบับร่างไม่ได้ โปรดกลับไปแยกเมนูจากข้อความอีกครั้ง");
+  const sourceRaw = review.draft?.raw ?? review.raw;
+  if (typeof sourceRaw !== "string" || sourceRaw.length > RECEIPT_LIMIT) fail();
+  const sourceLines = sourceRaw.split(/\r\n|\r|\n/);
   const ids = /* @__PURE__ */ new Set();
   for (const row of review.rows) {
-    if (typeof row.id !== "string" || !row.id || ids.has(row.id) || typeof row.itemName !== "string" || row.itemName.length > 200 || !Number.isInteger(row.qty) || row.qty < 1 || row.qty > 99 || !["unit_price", "line_total"].includes(row.priceSource) || !Number.isFinite(row.priceValue) || row.priceValue < 0 || row.priceValue > 1e10) throw Error("ข้อมูลเมนูในฉบับร่างไม่ถูกต้อง โปรดกลับไปตรวจสอบข้อความ");
+    if (!plain(row) || typeof row.id !== "string" || !row.id || row.id.length > 200 || ids.has(row.id) || typeof row.itemName !== "string" || row.itemName.length > 200 || row.qty !== null && (!Number.isInteger(row.qty) || row.qty < 1 || row.qty > 99) || !["unit_price", "line_total"].includes(row.priceSource) || row.priceValue !== null && (!Number.isFinite(row.priceValue) || row.priceValue < 0 || row.priceValue > 1e10)) throw Error("ข้อมูลเมนูในฉบับร่างไม่ถูกต้อง โปรดกลับไปตรวจสอบข้อความ");
+    if (row.priceValue !== null && receiptNumber(String(row.priceValue)) === null) fail();
     ids.add(row.id);
-    if (row.flags != null && (!Array.isArray(row.flags) || row.flags.some((flag) => !flag || typeof flag.type !== "string" || flag.msg != null && typeof flag.msg !== "string"))) throw Error("ข้อมูลเมนูในฉบับร่างไม่ถูกต้อง โปรดกลับไปตรวจสอบข้อความ");
+    if (row.isDiscount !== void 0 && typeof row.isDiscount !== "boolean") fail();
+    if (row.flags != null && (!Array.isArray(row.flags) || row.flags.length > 1e4 || row.flags.some((flag) => !flag || typeof flag.type !== "string" || flag.type.length > RECEIPT_LIMIT || flag.msg != null && (typeof flag.msg !== "string" || flag.msg.length > RECEIPT_LIMIT)))) throw Error("ข้อมูลเมนูในฉบับร่างไม่ถูกต้อง โปรดกลับไปตรวจสอบข้อความ");
+    if (!row.isDiscount) {
+      validateIssues(row.issues);
+      validateEvidence(row, sourceLines);
+      for (const [key, value] of [["qty", row.qty], ["price", row.priceValue]]) {
+        const issue = row.issues[key];
+        if (value === null && !issue || issue && ["missing", "invalid"].includes(issue.reason) && value !== null || key === "price" && issue && issue.editField !== row.priceSource) fail();
+      }
+      if (row.priceValue !== null && !row.priceEdited && !row.issues.price) {
+        const proof = row.priceSource === "line_total" ? row.evidence.totalCents : row.evidence.unitCents;
+        if (proof === null || receiptNumber(String(row.priceValue)) === null || cents(String(row.priceValue)) !== proof) fail();
+      }
+    }
   }
+  validateIssues(review.summaryIssues, true);
+  if (!sameColumns(review.colOrder)) fail();
   for (const value of Object.values(review.summaryEdits ?? {})) if (value != null && (!Number.isFinite(value) || value < 0)) throw Error("ข้อมูลปรับยอดในฉบับร่างไม่ถูกต้อง");
   for (const key of ["service_charge", "vat", "discount"]) {
     const source = review.summarySource?.[key];
@@ -1208,13 +1346,28 @@ function validateReview(review) {
   }
   if (!["rate", "amount"].includes(review.discountCanonical) || !["input", "results"].includes(review.page) || !["append", "replace"].includes(review.importMode) || !["all", "none"].includes(review.importAssignments)) throw Error("ตัวเลือกในฉบับร่างไม่ถูกต้อง");
   if (review.page === "results" && (typeof review.draft?.id !== "string" || !review.draft.id || typeof review.draft?.group?.id !== "string")) throw Error("ไม่พบข้อมูลใบเสร็จเดิม โปรดกลับไปแยกเมนูอีกครั้ง");
-  const view = receiptSummary(reviewSubtotal(review), review.summarySource, review.summaryEdits, review.discountCanonical);
-  if (![view.total, view.service_charge.amount, view.vat.amount, view.discount.amount].every((v) => Number.isFinite(v) && v >= 0)) throw Error("ยอดฉบับร่างไม่ถูกต้อง โปรดตรวจสอบรายการและส่วนลด");
+  if (review.draft) {
+    if (typeof review.draft.raw !== "string" || review.draft.raw.length > RECEIPT_LIMIT) fail();
+    const b = emptyBill();
+    b.groups.push(review.draft.group);
+    validateBill(b);
+  }
+  if (review.draft?.notices !== void 0 && (!Array.isArray(review.draft.notices) || review.draft.notices.length > 1e4 || review.draft.notices.some((n) => typeof n !== "string" || n.length > RECEIPT_LIMIT))) fail();
 }
 function normalizeReviewDraft(saved) {
   if (saved?.schema !== 3) throw Error("รุ่นฉบับร่างไม่รองรับ เก็บข้อความไว้แล้วแยกเมนูอีกครั้ง");
   if (typeof saved.billId !== "string" || !saved.billId || !Number.isSafeInteger(saved.baseRevision) || saved.baseRevision < 1) throw Error("ฉบับร่างไม่มีข้อมูลบิลที่ถูกต้อง");
-  const review = { schema: 3, billId: saved.billId, baseRevision: saved.baseRevision, raw: saved.raw, rows: clone(saved.rows), summarySource: clone(saved.summarySource ?? {}), summaryEdits: clone(saved.summaryEdits ?? {}), discountCanonical: saved.discountCanonical ?? "amount", colOrder: clone(saved.colOrder ?? ["unit_price", "line_total"]), importMode: saved.importMode ?? "append", importAssignments: saved.importAssignments ?? "all", page: saved.page ?? "input", draft: clone(saved.draft ?? null) };
+  const review = { schema: 3, billId: saved.billId, baseRevision: saved.baseRevision, raw: saved.raw, rows: clone(saved.rows), summarySource: clone(saved.summarySource ?? {}), summaryEdits: clone(saved.summaryEdits ?? {}), summaryIssues: clone(Object.hasOwn(saved, "summaryIssues") ? saved.summaryIssues : {}), discountCanonical: saved.discountCanonical ?? "amount", colOrder: clone(saved.colOrder ?? ["unit_price", "line_total"]), importMode: saved.importMode ?? "append", importAssignments: saved.importAssignments ?? "all", page: saved.page ?? "input", draft: clone(saved.draft ?? null) };
+  if (!Object.hasOwn(saved, "summaryIssues")) {
+    if (!Array.isArray(review.rows) || review.rows.some((r) => ["evidence", "issues", "priceEdited"].some((k) => Object.hasOwn(r, k)))) fail();
+    for (const row of review.rows) {
+      row.rawLine ??= "";
+      row.evidence = emptyReceiptEvidence();
+      row.priceEdited = false;
+      row.issues = { qty: fieldIssue("unverified", "qty"), price: fieldIssue("unverified", row.priceSource) };
+    }
+    for (const kind of ["service_charge", "vat", "discount"]) if (review.summarySource[kind] || Object.entries(review.summaryEdits).some(([k, v]) => k.startsWith(kind + "_") && v !== null)) review.summaryIssues[kind] = fieldIssue("unverified", kind === "discount" ? review.discountCanonical : review.summarySource[kind]?.mode === "amount" ? "amount" : "rate");
+  }
   if (!sameColumns(review.colOrder)) throw Error("ลำดับคอลัมน์ในฉบับร่างไม่ถูกต้อง");
   validateReview(review);
   return { review, notices: [] };
@@ -1223,14 +1376,12 @@ function sameColumns(columns) {
   return Array.isArray(columns) && columns.length === 2 && new Set(columns).size === 2 && columns.every((c) => ["unit_price", "line_total"].includes(c));
 }
 var isReviewItem = (row) => !row.isDiscount;
-function hasReviewItems(review) {
-  return review.rows.some(isReviewItem);
+function projectRows(rows, groupId) {
+  return rows.filter(isReviewItem).map((r) => ({ id: r.id, groupId, name: r.itemName, quantity: r.qty, priceSource: r.priceSource, priceCents: cents(String(r.priceValue)), assignments: [], rawLine: r.rawLine ?? "" }));
 }
-function buildReviewedDraft(review) {
-  validateReview(review);
-  const draft = clone(review.draft), rows = review.rows.filter(isReviewItem);
-  if (!rows.length) throw Error("ยังไม่มีเมนูให้เพิ่ม");
-  draft.items = rows.map((r) => ({ id: r.id, groupId: draft.group.id, name: r.itemName, quantity: r.qty, priceSource: r.priceSource, priceCents: Math.round(r.priceValue * 100), assignments: [], rawLine: r.rawLine ?? "" }));
+function projectReview(review) {
+  const draft = clone(review.draft);
+  draft.items = projectRows(review.rows, draft.group.id);
   const view = receiptSummary(reviewSubtotal(review), review.summarySource, review.summaryEdits, review.discountCanonical);
   for (const [key, field] of [["service", "service_charge"], ["tax", "vat"], ["discount", "discount"]]) {
     const rate = key === "discount" ? review.discountCanonical === "rate" && !review.summarySource?.discount?.extraAmountSum : review.summarySource?.[field]?.mode === "percent";
@@ -1241,6 +1392,42 @@ function buildReviewedDraft(review) {
   if (!draft.group.tax.value) draft.group.tax = { kind: "rate", value: 700, enabled: false, treatment: "excluded" };
   draft.group.placement = "after_sc_vat";
   return draft;
+}
+function reviewAdmission(review) {
+  const issues = [];
+  try {
+    validateReview(review);
+  } catch (error) {
+    return { ok: false, issues: [{ structural: true, message: error.message }] };
+  }
+  if (!review.rows.some(isReviewItem)) issues.push({ message: "ยังไม่มีเมนูให้เพิ่ม" });
+  if (review.page !== "results") issues.push({ message: "กลับไปตรวจสอบเมนูก่อนเพิ่มลงบิล" });
+  for (const row of review.rows.filter(isReviewItem)) {
+    for (const [field, value] of [["qty", row.qty], ["price", row.priceValue]]) if (row.issues[field] || value === null || field === "price" && receiptNumber(String(value)) === null) issues.push({ rowId: row.id, field, reason: row.issues[field]?.reason, editField: field === "qty" ? "qty" : row.issues.price?.editField ?? row.priceSource });
+    if (!row.issues.price && row.priceValue !== null && row.qty !== null) try {
+      itemTotal({ quantity: row.qty, priceSource: row.priceSource, priceCents: cents(String(row.priceValue)) });
+    } catch {
+      issues.push({ rowId: row.id, field: "price", editField: row.priceSource });
+    }
+  }
+  for (const [kind, issue] of Object.entries(review.summaryIssues)) issues.push({ kind, field: issue.editField });
+  if (!issues.length) try {
+    const draft = projectReview(review), bill = emptyBill();
+    bill.groups.push(draft.group);
+    bill.items = draft.items;
+    validateBill(bill);
+    calculate(bill);
+    const view = receiptSummary(reviewSubtotal(review), review.summarySource, review.summaryEdits, review.discountCanonical);
+    if (view.total < 0) throw Error("เช็กส่วนลด ยอดที่ต้องจ่ายต้องไม่ต่ำกว่า 0");
+  } catch (error) {
+    issues.push({ message: error.message });
+  }
+  return { ok: !issues.length, issues: issues.map((issue) => ({ ...issue, message: receiptIssueMessage(issue) })) };
+}
+function buildReviewedDraft(review) {
+  const result = reviewAdmission(review);
+  if (!result.ok) throw Error(result.issues[0].message);
+  return projectReview(review);
 }
 function copyReceiptForImport(draft) {
   const next = clone(draft);
@@ -1253,17 +1440,17 @@ function parseDraft(raw, { id = newId } = {}) {
   if (typeof raw !== "string" || raw.length > 1e5) throw Error("ข้อความใบเสร็จยาวเกินไป");
   const normalized = raw.replace(/[๐-๙]/g, (c) => String(c.charCodeAt(0) - 3664)).replace(/\u0e4d\u0e32/g, "ำ");
   const notices = [];
-  const parsed = parseReceipt(normalized, { recoverOmitted: true, onSummaryEntries(entries) {
+  const parsed = parseReceipt(raw, { recoverOmitted: true, onSummaryEntries(entries) {
     const vat = entries.filter((e) => e.kind === "vat" && /^(?:vat|value added tax|ภาษี(?:มูลค่าเพิ่ม)?)\s*(?:inclusive|included|incl\.|รวมในราคา|รวมอยู่ในราคา)/i.test(e.norm));
     if (vat.length) notices.push(`ใบเสร็จระบุ “${vat.map((e) => e.raw).join(" / ")}” หากราคาอาหารรวมภาษีแล้ว ให้ตั้ง VAT เป็น 0 เพื่อไม่ให้คิดซ้ำ`);
     const discounts = entries.filter((e) => e.kind === "discount");
-    if (discounts.filter((e) => e.hasPct).length > 1) notices.push(`พบส่วนลดหลายอัตรา “${discounts.map((e) => e.raw).join(" / ")}” ค่าเริ่มต้นใช้อัตราแรก ตรวจสอบและแก้ยอดส่วนลดให้ตรงกับใบเสร็จ`);
+    if (discounts.filter((e) => e.hasPct).length > 1) notices.push(`พบส่วนลดหลายเปอร์เซ็นต์ “${discounts.map((e) => e.raw).join(" / ")}” ใช้เปอร์เซ็นต์แรกไว้ก่อน ตรวจสอบและแก้ยอดส่วนลดให้ตรงกับใบเสร็จ`);
   } });
   const groupId = id(), group = { id: groupId, name: "ใบเสร็จ", ...adjustment() };
   const source = parsed.summarySource;
   for (const [key, field] of [["service", "service_charge"], ["tax", "vat"], ["discount", "discount"]]) {
     const a = source[field];
-    if (a) group[key] = { ...group[key], enabled: true, kind: a.mode === "percent" ? "rate" : "fixed", value: a.mode === "percent" ? Math.round(a.value * 100) : cents(a.value.toFixed(2)) };
+    if (a && a.value <= (a.mode === "percent" ? 100 : 1e10)) group[key] = { ...group[key], enabled: true, kind: a.mode === "percent" ? "rate" : "fixed", value: a.mode === "percent" ? Math.round(a.value * 100) : cents(a.value.toFixed(2)) };
   }
   if (source.vat) group.tax.treatment = "unknown";
   const totalLines = normalized.split(/\r?\n/).filter((l) => /^\s*(?:grand\s*total|net\s*total|total|ยอดชำระสุทธิ|ยอดสุทธิ|ยอดรวมสุทธิ|รวมทั้งสิ้น|ยอดรวมทั้งสิ้น|รวมทั้งหมด|ยอดรวม)\s*[:：]?\s*(?:฿|\$|THB|บาท)?\s*[\d,]+(?:\.\d{1,2})?\s*(?:บาท|฿)?\s*$/i.test(l));
@@ -1271,38 +1458,37 @@ function parseDraft(raw, { id = newId } = {}) {
     const match = totalLines.at(-1).match(/([\d,]+(?:\.\d{1,2})?)\s*(?:บาท|฿)?\s*$/);
     group.printedTotalCents = cents(match[1]);
   }
-  const items = parsed.rows.filter((r) => !r.isDiscount).map((r) => ({ id: id(), groupId, name: r.itemName, quantity: r.qty, priceSource: r.priceSource, priceCents: cents(r.priceValue.toFixed(2)), assignments: [], needsReview: r.needsReview, rawLine: r.rawLine, flags: r.flags }));
-  if (source.discount?.extraAmountSum) {
-    const subtotal = items.reduce((s, r) => s + (r.priceSource === "line_total" ? r.priceCents : r.priceCents * r.quantity), 0) / 100;
-    const edits = initializeSummaryEdits(subtotal, source);
-    const result = receiptSummary(subtotal, source, edits, "rate");
-    group.discount = { kind: "fixed", enabled: true, value: cents(result.discount.amount.toFixed(2)) };
-    notices.push("พบส่วนลดหลายรูปแบบ กรุณาตรวจสอบยอดส่วนลดรวม");
-  }
-  const draft = { id: id(), raw, group, items, notices };
-  const check = emptyBill();
-  check.groups.push(group);
-  check.items = items;
-  validateBill(check);
-  return { draft, summarySource: source };
+  const rows = parsed.rows.filter((r) => !r.isDiscount).map((r) => ({ ...r, id: id() }));
+  const draft = { id: id(), raw, group, items: [], notices };
+  if (source.discount?.extraAmountSum) notices.push("พบส่วนลดหลายรูปแบบ กรุณาตรวจสอบยอดส่วนลดรวม");
+  return { draft, rows, summarySource: source, summaryIssues: parsed.summaryIssues ?? {} };
 }
 function createDraft(raw, options) {
-  return parseDraft(raw, options).draft;
+  const review = completeReview(parseDraft(raw, options));
+  const draft = buildReviewedDraft(review);
+  const reviewedGroup = draft.group;
+  draft.group = clone(review.draft.group);
+  if (review.summarySource.discount?.extraAmountSum) draft.group.discount = reviewedGroup.discount;
+  draft.items = draft.items.map((item) => {
+    const row = review.rows.find((r) => r.id === item.id);
+    return { ...item, needsReview: row.needsReview, flags: clone(row.flags) };
+  });
+  return draft;
+}
+function completeReview(parsed) {
+  return {
+    ...parsed,
+    raw: parsed.draft.raw,
+    page: "results",
+    colOrder: ["unit_price", "line_total"],
+    importMode: "append",
+    importAssignments: "all",
+    summaryEdits: initializeSummaryEdits(null, parsed.summarySource),
+    discountCanonical: parsed.summarySource?.discount?.mode === "amount" ? "amount" : "rate"
+  };
 }
 function createReceiptReview(raw) {
-  const { draft, summarySource } = parseDraft(raw);
-  const rows = draft.items.map((item) => ({
-    id: item.id,
-    rawLine: item.rawLine,
-    itemName: item.name,
-    qty: item.quantity,
-    priceSource: item.priceSource,
-    priceValue: item.priceCents / 100,
-    needsReview: item.needsReview,
-    flags: item.flags || [],
-    isDiscount: false
-  }));
-  return { draft, rows, summarySource };
+  return completeReview(parseDraft(raw));
 }
 
 // src/receipt-view.mjs
@@ -1389,15 +1575,24 @@ function rowEditTarget(element, key) {
   const rowId = element.closest("tr").dataset.rowId;
   return [rowId, element.dataset[key].slice(rowId.length + 1)];
 }
+function currentDiscrepancyMessage(row) {
+  const difference = getReceiptDiscrepancy(row);
+  return difference ? `ราคาคูณจำนวนที่เลือกได้ ${formatMoney(difference.calculatedCents / 100)} ไม่ตรงกับยอด ${formatMoney(difference.printedCents / 100)} ในใบเสร็จ` : "";
+}
 function renderPriceCell(state2, row, colLabel) {
-  const { unitPrice, lineTotal } = getDerivedValues(row);
+  const derived = getDerivedValues(row);
+  const printed = !row.priceEdited && row.evidence?.unitCents !== null && row.evidence?.totalCents !== null;
+  const unitPrice = printed ? row.evidence.unitCents / 100 : derived.unitPrice;
+  const lineTotal = printed ? row.evidence.totalCents / 100 : derived.lineTotal;
   const isCanonical = colLabel === row.priceSource;
   const roleClass = isCanonical ? "td-canonical td-price-source" : "td-derived";
   const value = colLabel === "unit_price" ? unitPrice : lineTotal;
+  const printedDescription = `ราคาในใบเสร็จ ${row.evidence?.unitCents == null ? "ยังไม่ทราบ" : formatMoney(row.evidence.unitCents / 100)} ยอดรวมในใบเสร็จ ${row.evidence?.totalCents == null ? "ยังไม่ทราบ" : formatMoney(row.evidence.totalCents / 100)}`;
+  const description = `${row.rawLine ?? ""} ${printedDescription} ${row.priceEdited ? "ราคาที่แก้ไขและค่าคำนวณ" : printed ? "ราคาที่พิมพ์ในใบเสร็จ" : isCanonical ? "ราคาที่เลือก" : "ราคาที่คำนวณ"} จำนวนที่เลือก ${row.qty ?? "ยังไม่ทราบ"} ${currentDiscrepancyMessage(row)}`;
   const field = `${esc(row.id)}:${colLabel}`;
   const editing = state2.editing?.rowId === row.id && state2.editing.field === colLabel;
   if (editing) {
-    return `<td class="cell-with-overlay ${roleClass}"><input class="ci price" data-edit-input="${field}" value="${formatMoney(value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`;
+    return `<td class="cell-with-overlay ${roleClass}"><input class="ci price" data-edit-input="${field}" aria-label="${colLabel === "unit_price" ? "ราคา" : "ยอดรวม"} ${esc(row.itemName)}" value="${esc(row.issues?.price?.editField === colLabel && row.issues.price.input !== null ? row.issues.price.input : value === null ? "" : formatMoney(value))}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>`;
   }
   const isRightCol = state2.colOrder[1] === colLabel;
   const swapOverlay = isRightCol && !row.isDiscount ? `<button class="swap-position swap-row-btn" data-swap-row="${esc(row.id)}" title="สลับราคาแถวนี้">${SWAP_ICON_ROW}</button>` : "";
@@ -1405,7 +1600,7 @@ function renderPriceCell(state2, row, colLabel) {
   const discount = isCanonical && row.isDiscount ? " td-discount" : "";
   const display = formatMoneyDisplay(value);
   const content2 = isRightCol ? `<span data-p2-num class="p2-num">${display}</span>` : display;
-  return `<td class="${roleClass}${discount}${column}" data-edit-cell="${field}">${swapOverlay}${content2}</td>`;
+  return `<td class="${roleClass}${discount}${column}" tabindex="0" role="button" aria-label="${colLabel === "unit_price" ? "ราคา" : "ยอดรวม"} ${esc(row.itemName)}" aria-description="${esc(description)}" data-edit-cell="${field}">${swapOverlay}${content2}</td>`;
 }
 function renderInput(model, actions) {
   const app = document.getElementById("app"), state2 = model;
@@ -1468,9 +1663,28 @@ function renderInput(model, actions) {
 }
 function renderReview(model, actions) {
   const app = document.getElementById("app"), state2 = model;
-  let _summaryCardFocusing = false;
+  let summaryFocusTarget = null;
   const subtotal = reviewSubtotal(state2);
+  const admission = reviewAdmission(state2);
   const summaryView = receiptSummary(subtotal, state2.summarySource, state2.summaryEdits, state2.discountCanonical);
+  const foodUnknown = state2.rows.some((r) => !r.isDiscount && (r.qty === null || r.priceValue === null || Object.keys(r.issues ?? {}).length));
+  const pending = Object.keys(state2.summaryIssues ?? {});
+  const showMoney = formatMoneyDisplay;
+  for (const kind of ["service_charge", "vat", "discount"]) {
+    const v = summaryView[kind], issue = state2.summaryIssues?.[kind];
+    v.issue = issue;
+    const fixed = kind === "discount" ? state2.discountCanonical === "amount" : v.source?.mode === "amount";
+    const active2 = !!v.source || v.amount > 0 || v.rate > 0;
+    if (issue || foodUnknown && active2 && !fixed || kind === "vat" && pending.includes("service_charge") || kind === "discount" && pending.some((k) => k !== "discount")) v.amount = null;
+    if (issue || foodUnknown && active2 && fixed) v.rate = null;
+  }
+  const previewEdits = { ...state2.summaryEdits }, previewSources = { ...state2.summarySource };
+  for (const kind of pending) {
+    previewSources[kind] = null;
+    previewEdits[kind + "_rate"] = 0;
+    if (kind === "discount") previewEdits.discount_amount = 0;
+  }
+  const previewTotal = receiptSummary(subtotal, previewSources, previewEdits, state2.discountCanonical).total;
   const showSC = summaryView.service_charge.amount > 0 || summaryView.service_charge.rate > 0;
   const showVAT = summaryView.vat.amount > 0 || summaryView.vat.rate > 0;
   const showDisc = summaryView.discount.amount > 0;
@@ -1482,8 +1696,8 @@ function renderReview(model, actions) {
     const nameEditing = state2.editing?.rowId === row.id && state2.editing?.field === "itemName";
     const qtyEditing = state2.editing?.rowId === row.id && state2.editing?.field === "qty";
     const discTypeBadge = row.isDiscount && row.discountType ? `<span class="badge-discount-type badge">${row.discountType === "percent" ? "%" : "฿"}</span>` : "";
-    const nameCell = nameEditing ? `<td class="td-canonical"><input class="ci name" data-edit-input="${esc(row.id)}:itemName" value="${esc(row.itemName)}" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>` : `<td class="td-name td-canonical" data-edit-cell="${esc(row.id)}:itemName">${esc(row.itemName)}${row.isDiscount ? '<span class="badge badge-d">disc</span>' : ""}${discTypeBadge}${row.needsReview && !row.isDiscount ? '<span class="badge badge-r">?</span>' : ""}${row.flags?.length > 0 ? `<span class="badge badge-w" title="${esc((row.flags || []).map((f) => f.msg || f.type).join(" / "))}">!</span>` : ""}</td>`;
-    const qtyCell = qtyEditing ? `<td class="td-quantity td-canonical"><input class="ci qty" data-edit-input="${esc(row.id)}:qty" value="${row.qty}" inputmode="numeric" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>` : `<td class="td-quantity td-canonical" data-edit-cell="${esc(row.id)}:qty"><span>${row.qty}</span></td>`;
+    const nameCell = nameEditing ? `<td class="td-canonical"><input class="ci name" data-edit-input="${esc(row.id)}:itemName" value="${esc(row.itemName)}" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>` : `<td class="td-name td-canonical" tabindex="0" role="button" aria-label="ชื่อเมนู ${esc(row.itemName)}" data-edit-cell="${esc(row.id)}:itemName">${esc(row.itemName)}${row.isDiscount ? '<span class="badge badge-d">disc</span>' : ""}${discTypeBadge}${(row.needsReview || Object.keys(row.issues ?? {}).length) && !row.isDiscount ? '<span class="badge badge-r">?</span>' : ""}${row.flags?.length > 0 || currentDiscrepancyMessage(row) ? `<span class="badge badge-w" title="${esc([...(row.flags || []).map((f) => f.msg || f.type), currentDiscrepancyMessage(row)].filter(Boolean).join(" / "))}">!</span>` : ""}</td>`;
+    const qtyCell = qtyEditing ? `<td class="td-quantity td-canonical"><input class="ci qty" data-edit-input="${esc(row.id)}:qty" aria-label="จำนวน ${esc(row.itemName)}" value="${esc(row.issues?.qty?.input ?? row.qty ?? "")}" inputmode="numeric" enterkeyhint="done" autocomplete="off" spellcheck="false" /></td>` : `<td class="td-quantity td-canonical" tabindex="0" role="button" aria-label="จำนวน ${esc(row.itemName)}" data-edit-cell="${esc(row.id)}:qty"><span>${row.qty ?? "ยังไม่ทราบ"}</span></td>`;
     return `<tr class="${cls}" data-row-id="${esc(row.id)}">${nameCell}${qtyCell}${renderPriceCell(state2, row, state2.colOrder[0])}${renderPriceCell(state2, row, state2.colOrder[1])}<td class="td-del"><button class="del" data-delete="${esc(row.id)}" title="ลบ">${BIN_ICON}</button></td></tr>`;
   }).join("");
   const scRateLabel = summaryView.service_charge.rate > 0 ? ` (${formatPctForDisplay(summaryView.service_charge.rate)}%)` : "";
@@ -1495,8 +1709,8 @@ function renderReview(model, actions) {
       <div class="sub-bar receipt-history-row" id="subBar" hidden></div>
       <div class="res-inner">
       <div class="summary-sticky-bar" id="summaryBar">
-        <div class="ssb-card"><span class="ssb-lbl">รวมค่าอาหาร</span><span class="ssb-val ssb-subtotal">${formatMoneyDisplay(summaryView.subtotal)}</span></div>
-        <div class="ssb-card ssb-card-total"><span class="ssb-lbl">ยอดที่ต้องจ่าย</span><span class="ssb-val ssb-total">${formatMoneyDisplay(summaryView.total)}</span></div>
+        <div class="ssb-card"><span class="ssb-lbl">รวมค่าอาหาร</span><span class="ssb-val ssb-subtotal">${showMoney(summaryView.subtotal)}</span></div>
+        <div class="ssb-card ssb-card-total"><span class="ssb-lbl">ยอดที่ต้องจ่าย</span><span class="ssb-val ssb-total">${showMoney(previewTotal)}</span></div>
       </div>
       <div class="summary-grid">${renderChargeCard("service_charge", "Service Charge", summaryView.service_charge, "SC")}${renderChargeCard("vat", "VAT", summaryView.vat)}${renderDiscountCard(summaryView.discount)}</div>
       <div class="swap-bar"><span class="swap-hint"><span class="swap-hint-fragment"><span class="swap-hint-emphasis">เลขสีส้ม </span><span class="swap-hint-p2">คือราคาที่อ่านได้จากใบเสร็จ</span></span><span class="swap-hint-fragment swap-hint-p2">หรือราคาที่คุณแก้ไขใหม่</span></span></div>
@@ -1520,16 +1734,16 @@ function renderReview(model, actions) {
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
         <tfoot>
-          <tr><td class="tfoot-label" colspan="${footerColspan}">รวมค่าอาหาร</td><td class="tfoot-value tfoot-subtotal">${formatMoneyDisplay(summaryView.subtotal)}</td><td></td></tr>
+          <tr><td class="tfoot-label" colspan="${footerColspan}">รวมค่าอาหาร</td><td class="tfoot-value tfoot-subtotal">${showMoney(summaryView.subtotal)}</td><td></td></tr>
           ${showSC ? `<tr><td class="tfoot-label" colspan="${footerColspan}">Service Charge${esc(scRateLabel)}</td><td class="tfoot-value tfoot-sc">+${formatMoneyDisplay(summaryView.service_charge.amount)}</td><td></td></tr>` : ""}
           ${showVAT ? `<tr><td class="tfoot-label" colspan="${footerColspan}">VAT${esc(vatRateLabel)}</td><td class="tfoot-value tfoot-vat">+${formatMoneyDisplay(summaryView.vat.amount)}</td><td></td></tr>` : ""}
           ${showDisc ? `<tr><td class="tfoot-label" colspan="${footerColspan}">ส่วนลด${esc(discRateLabel)}</td><td class="tfoot-value tfoot-disc">-${formatMoneyDisplay(summaryView.discount.amount)}</td><td></td></tr>` : ""}
-          <tr class="tfoot-grand"><td class="tfoot-label" colspan="${footerColspan}">ยอดที่ต้องจ่าย</td><td class="tfoot-value tfoot-total">${formatMoneyDisplay(summaryView.total)}</td><td></td></tr>
+          <tr class="tfoot-grand"><td class="tfoot-label" colspan="${footerColspan}">ยอดที่ต้องจ่าย</td><td class="tfoot-value tfoot-total">${showMoney(previewTotal)}</td><td></td></tr>
         </tfoot>
       </table></div></div>
       <div class="results-bottom-spacer" aria-hidden="true"></div>
     </div></div>
-    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${hasReviewItems(state2) ? "" : "disabled"}>เพิ่มเมนูลงบิล</button></div></div>`;
+    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${admission.ok ? "" : "disabled"}>เพิ่มเมนูลงบิล</button></div></div>`;
   const error = document.createElement("p");
   error.id = "receipt-import-error";
   error.className = "import-error";
@@ -1548,80 +1762,71 @@ function renderReview(model, actions) {
   app.querySelectorAll("[data-edit-cell]").forEach((cell) => {
     const [rowId, field] = rowEditTarget(cell, "editCell");
     actions.bindAction(cell, () => actions.startEdit(rowId, field));
+    cell.addEventListener("keydown", (event) => {
+      if (!event.isComposing && ["Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        actions.startEdit(rowId, field);
+      }
+    });
   });
   app.querySelectorAll("[data-edit-input]").forEach((input) => {
-    const [rowId, field] = rowEditTarget(input, "editInput");
-    const selectAll = field !== "itemName";
-    let committing = false;
-    input.addEventListener("focus", () => {
-      if (selectAll && typeof input.select === "function") input.select();
-    });
-    input.addEventListener("blur", () => {
-      if (committing) {
-        committing = false;
-        return;
-      }
+    const [rowId, field] = rowEditTarget(input, "editInput"), initial = input.value;
+    let committed = false;
+    const commit = () => {
+      if (committed) return;
+      committed = true;
       actions.commitRow(rowId, field, input.value);
+    };
+    input.addEventListener("blur", () => {
+      if (!committed && input.value !== initial) commit();
     });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.isComposing) {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Enter") {
         e.preventDefault();
-        committing = true;
-        input.blur();
-        actions.commitRow(rowId, field, input.value);
+        commit();
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        committing = true;
-        input.blur();
+        committed = true;
         actions.cancelEdit();
       }
     });
   });
-  app.querySelectorAll("[data-delete]").forEach((btn) => {
-    actions.bindAction(btn, () => actions.deleteRow(btn.dataset.delete));
-  });
-  app.querySelectorAll("[data-summary-card]").forEach((card) => {
-    card.querySelectorAll("[data-summary-input]").forEach((input) => {
-      const [cardKind, field] = input.dataset.summaryInput.split(":");
-      let committing = false;
-      let valueAtFocus = null;
-      input.addEventListener("pointerdown", () => {
-        _summaryCardFocusing = true;
-      });
-      input.addEventListener("focus", () => {
-        _summaryCardFocusing = false;
-        valueAtFocus = input.value;
-        if (typeof input.select === "function") input.select();
-      });
-      input.addEventListener("blur", () => {
-        if (committing) {
-          committing = false;
-          return;
-        }
-        if (input.value === valueAtFocus) {
-          return;
-        }
-        if (_summaryCardFocusing) {
-          actions.editSummary(cardKind, field, input.value, { forceHistory: true, render: false });
-          return;
-        }
-        actions.editSummary(cardKind, field, input.value);
-      });
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.isComposing) {
-          e.preventDefault();
-          committing = true;
-          input.blur();
-          actions.editSummary(cardKind, field, input.value);
-        }
-        if (e.key === "Escape") {
-          e.preventDefault();
-          committing = true;
-          input.blur();
-          actions.cancelEdit();
-        }
-      });
+  app.querySelectorAll("[data-delete]").forEach((btn) => actions.bindAction(btn, () => actions.deleteRow(btn.dataset.delete)));
+  app.querySelectorAll("[data-summary-input]").forEach((input) => {
+    const [kind, field] = input.dataset.summaryInput.split(":");
+    let initial = input.value, committed = false;
+    input.addEventListener("pointerdown", () => {
+      summaryFocusTarget = input.dataset.summaryInput;
+    });
+    input.addEventListener("focus", () => {
+      initial = input.value;
+      input.select();
+    });
+    const commit = () => {
+      if (committed) return;
+      committed = true;
+      actions.editSummary(kind, field, input.value);
+    };
+    input.addEventListener("blur", (event) => {
+      if (committed || input.value === initial) return;
+      const target = event.relatedTarget?.dataset.summaryInput ?? summaryFocusTarget;
+      commit();
+      if (target && target !== input.dataset.summaryInput) requestAnimationFrame(() => app.querySelector(`[data-summary-input="${target}"]`)?.focus());
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        committed = true;
+        actions.cancelEdit();
+        app.querySelector(`[data-summary-input="${kind}:${field}"]`)?.focus();
+      }
     });
   });
   const cancelInitial = scheduleInitialLayout();
@@ -1750,7 +1955,9 @@ function createReceiptImportController({
 }) {
   let busy = false;
   async function submit() {
-    if (busy || getStatus().composing || !hasReviewItems(getReview())) return;
+    if (busy || getStatus().composing) return;
+    const admission = reviewAdmission(getReview());
+    if (!admission.ok) return;
     busy = true;
     let repeatNeeded = false;
     try {
@@ -1895,12 +2102,15 @@ function createHistory(initial, { limit = 20, equal = sameValue, serialized } = 
 }
 
 // src/receipt-review-model.mjs
-var roundMoney = (value) => Math.round(value * 100) / 100;
-var fields = ["rows", "summarySource", "summaryEdits", "discountCanonical", "colOrder", "importMode", "importAssignments"];
+function createManualReviewRow(id) {
+  return { id, rawLine: "", itemName: "เมนูใหม่", qty: 1, priceSource: "line_total", priceValue: null, needsReview: true, isDiscount: false, flags: [], evidence: emptyReceiptEvidence(), issues: { price: fieldIssue("missing", "line_total") }, priceEdited: false };
+}
+var fields = ["rows", "summarySource", "summaryEdits", "summaryIssues", "discountCanonical", "colOrder", "importMode", "importAssignments"];
 function snapshot(review = {}) {
   const defaults = {
     rows: [],
     summarySource: null,
+    summaryIssues: {},
     summaryEdits: { service_charge_rate: null, vat_rate: null, discount_rate: null, discount_amount: null },
     discountCanonical: "rate",
     colOrder: ["unit_price", "line_total"],
@@ -1931,6 +2141,31 @@ function createReceiptReviewModel(initialReview) {
         review.rows = review.rows.map((row) => row.id === id ? { ...row, ...structuredClone(patch) } : row);
       });
     },
+    editRow(id, field, input) {
+      return edit((review) => {
+        const row = review.rows.find((r) => r.id === id);
+        if (!row) return;
+        if (field === "itemName") {
+          row.itemName = String(input).trim() || "เมนูใหม่";
+          return;
+        }
+        const qty = field === "qty", key = qty ? "qty" : "price", value = receiptNumber(input, { quantity: qty });
+        row.issues = { ...row.issues };
+        if (value === null) {
+          row.issues[key] = fieldIssue(String(input).trim() === "" ? "missing" : "invalid", field, String(input));
+          row[qty ? "qty" : "priceValue"] = null;
+          if (!qty) row.priceSource = field;
+          return;
+        }
+        row[qty ? "qty" : "priceValue"] = value;
+        delete row.issues[key];
+        if (qty) row.qtyWasNull = false;
+        else {
+          row.priceSource = field;
+          row.priceEdited = true;
+        }
+      });
+    },
     addRow(row) {
       return edit((review) => {
         review.rows.push(structuredClone(row));
@@ -1943,25 +2178,31 @@ function createReceiptReviewModel(initialReview) {
     },
     swapPrices(idOrNull = null) {
       return edit((review) => {
-        review.rows = review.rows.map((row) => idOrNull == null || row.id === idOrNull ? { ...row, priceSource: row.priceSource === "line_total" ? "unit_price" : "line_total" } : row);
+        review.rows = review.rows.map((row) => {
+          if (idOrNull !== null && row.id !== idOrNull) return row;
+          const priceSource = row.priceSource === "line_total" ? "unit_price" : "line_total";
+          return { ...row, priceSource, priceEdited: true, issues: { ...row.issues, ...row.issues?.price ? { price: { ...row.issues.price, editField: priceSource } } : {} } };
+        });
       }, { force: true });
     },
     editSummary(kind, field, value, { forceHistory = false } = {}) {
       return edit((review) => {
-        const subtotal = reviewSubtotal(review);
-        const current = receiptSummary(subtotal, review.summarySource, review.summaryEdits, review.discountCanonical);
-        const parsed = parseFloat(String(value).replace(/,/g, "").replace(/-/g, ""));
-        const amount = Number.isFinite(parsed) ? Math.abs(parsed) : 0;
+        const amount = receiptNumber(String(value), { summary: true });
+        review.summaryIssues = { ...review.summaryIssues };
+        if (amount === null) {
+          review.summaryIssues[kind] = fieldIssue(String(value).trim() === "" ? "missing" : "invalid", field, String(value));
+          return;
+        }
+        delete review.summaryIssues[kind];
         if (kind === "service_charge" || kind === "vat") {
           review.summarySource = { ...review.summarySource, [kind]: {
             ...review.summarySource?.[kind],
             mode: field === "rate" ? "percent" : "amount",
             value: amount
           } };
-          const basis = kind === "vat" ? roundMoney(subtotal + current.service_charge.amount) : subtotal;
           review.summaryEdits = {
             ...review.summaryEdits,
-            [kind + "_rate"]: field === "rate" ? amount : basis > 0 ? amount / basis * 100 : 0
+            [kind + "_rate"]: field === "rate" ? amount : null
           };
         } else if (kind === "discount") {
           review.discountCanonical = field === "rate" ? "rate" : "amount";
@@ -3087,14 +3328,14 @@ async function openBillRepository({ indexedDB = globalThis.indexedDB, developmen
       throw Object.assign(Error(errorMessage(error)), { known: true });
     }
     return new Promise((resolve, reject) => {
-      const fail = (error, known) => reject(Object.assign(Error(errorMessage(error)), { known }));
+      const fail2 = (error, known) => reject(Object.assign(Error(errorMessage(error)), { known }));
       let tx, value, failure;
       function abort(error) {
         failure = error;
         try {
           tx.abort();
         } catch {
-          fail(error, false);
+          fail2(error, false);
         }
       }
       function receive(request, callback) {
@@ -3109,13 +3350,13 @@ async function openBillRepository({ indexedDB = globalThis.indexedDB, developmen
       try {
         tx = prepared;
         tx.oncomplete = () => resolve(value);
-        tx.onabort = () => fail(failure || tx.error || Error("การบันทึกถูกยกเลิก ลองอีกครั้ง"), true);
+        tx.onabort = () => fail2(failure || tx.error || Error("การบันทึกถูกยกเลิก ลองอีกครั้ง"), true);
         work(tx, (result) => {
           value = result;
         }, receive);
       } catch (error) {
         if (tx) abort(error);
-        else fail(error, true);
+        else fail2(error, true);
       }
     });
   }
@@ -3541,6 +3782,13 @@ var uid = newId;
 var parseGeneration = 0, textGeneration = 0;
 async function parseCurrentText(raw = state.raw, isCurrent = () => true) {
   if (!raw.trim()) return;
+  if (draftBlocked) {
+    const replace = await openSheet({ title: "เริ่มแยกเมนูจากข้อความนี้หรือไม่?", body: "<p>ฉบับร่างเดิมยังเปิดไม่ได้ ดาวน์โหลดฉบับร่างเดิมไว้ก่อนเริ่มใหม่</p>", actions: [{ label: "ยกเลิก", value: false }, { label: "ดาวน์โหลดฉบับร่างและเริ่มใหม่", run: async () => {
+      downloadReceiptWork();
+      return true;
+    } }], fallback: receiptActionFallback });
+    if (!replace) return;
+  }
   const token = ++parseGeneration, inputGeneration = textGeneration;
   const current = () => token === parseGeneration && inputGeneration === textGeneration && isCurrent();
   let result, loaded;
@@ -3577,14 +3825,14 @@ async function parseCurrentText(raw = state.raw, isCurrent = () => true) {
   }
   lastDraft = result.draft;
   receiptCommitted = false;
-  const subtotal = reviewSubtotal(result);
   reviewModel.replace({
     ...reviewModel.getSnapshot(),
     rows: result.rows,
     summarySource: result.summarySource,
+    summaryIssues: result.summaryIssues,
     importMode: "append",
     importAssignments: "all",
-    summaryEdits: initializeSummaryEdits(subtotal, result.summarySource),
+    summaryEdits: result.summaryEdits,
     discountCanonical: result.summarySource?.discount?.mode === "amount" ? "amount" : "rate"
   });
   draftBlocked = false;
@@ -3597,7 +3845,7 @@ async function parseCurrentText(raw = state.raw, isCurrent = () => true) {
 var reviewModel = createReceiptReviewModel();
 var textHistory = createReceiptTextHistory("");
 var state = { page: "input", raw: "", editing: null };
-for (const key of ["rows", "summarySource", "summaryEdits", "discountCanonical", "colOrder", "importMode", "importAssignments"]) {
+for (const key of ["rows", "summarySource", "summaryIssues", "summaryEdits", "discountCanonical", "colOrder", "importMode", "importAssignments"]) {
   Object.defineProperty(state, key, { get: () => reviewModel.getSnapshot()[key] });
 }
 var textDebounceTimer = null;
@@ -3651,12 +3899,8 @@ function redo() {
   state.editing = null;
   render();
 }
-function updateRow(id, patch) {
-  reviewModel.updateRow(id, patch);
-  render();
-}
 function addRow() {
-  const row = { id: uid(), rawLine: "", itemName: "เมนูใหม่", qty: 1, priceSource: "line_total", priceValue: 0, needsReview: false, isDiscount: false, flags: [] };
+  const row = createManualReviewRow(uid());
   reviewModel.addRow(row);
   state.editing = { rowId: row.id, field: "itemName" };
   render();
@@ -3690,43 +3934,29 @@ function startEdit(rowId, field) {
   if (field !== "itemName" && typeof el.select === "function") el.select();
 }
 function commitEdit(rowId, field, value) {
-  const row = state.rows.find((r) => r.id === rowId);
-  if (!row) {
-    state.editing = null;
-    render();
-    return;
-  }
   state.editing = null;
-  if (field === "itemName") {
-    const trimmed = String(value).trim();
-    updateRow(rowId, { itemName: trimmed || "เมนูใหม่", needsReview: false });
-    return;
-  }
-  if (field === "qty") {
-    const n = Math.min(99, Math.max(1, Math.round(parseFloat(String(value).replace(/,/g, "")) || 1)));
-    updateRow(rowId, { qty: n, qtyWasNull: false, needsReview: false });
-    return;
-  }
-  if (field === "unit_price" || field === "line_total") {
-    const n = parseFloat(String(value).replace(/,/g, "")) || 0;
-    const safeN = Math.max(0, n);
-    updateRow(rowId, { priceValue: safeN, priceSource: field, needsReview: false });
-    return;
-  }
+  reviewModel.editRow(rowId, field, value);
+  render();
 }
 function persistDraft() {
-  if (draftBlocked || !billId || targetError) return false;
+  if (draftBlocked || !draftReadSucceeded || !billId || targetError) {
+    if (!draftReadSucceeded) draftStorageFailed = true;
+    return false;
+  }
   if (!Number.isSafeInteger(baseRevision)) {
     draftStorageFailed = true;
     return false;
   }
   try {
     if (!tabStorage) throw Error();
-    const raw = JSON.stringify(reviewData());
+    const candidate = reviewData();
+    normalizeReviewDraft(candidate);
+    const raw = JSON.stringify(candidate);
     tabStorage.setItem(draftKey, raw);
     if (tabStorage.getItem(draftKey) !== raw) throw Error();
     draftStorageFailed = false;
     rawCheckpointPending = false;
+    rawDraftEvidence = raw;
     return true;
   } catch {
     draftStorageFailed = true;
@@ -3754,8 +3984,8 @@ function downloadReceiptText() {
 var restoredText = "";
 function downloadReceiptWork() {
   let raw = JSON.stringify(reviewData());
-  if (draftBlocked && rawDraftEvidence !== null) {
-    raw = state.raw === restoredText ? rawDraftEvidence : JSON.stringify({ source: rawDraftEvidence, receiptText: state.raw });
+  if ((draftBlocked || draftStorageFailed) && rawDraftEvidence !== null) {
+    raw = draftBlocked && state.raw === restoredText ? rawDraftEvidence : JSON.stringify({ source: rawDraftEvidence, current: reviewData(), receiptText: state.raw });
   }
   downloadReceiptData(raw, "หารจ่ายแฟร์ๆ-receipt-draft-evidence.json", "application/json");
 }
@@ -3786,7 +4016,8 @@ var recovery = createRecoveryNotice({ getModel: async () => editors.composing ? 
       persistDraft();
       showStorageNotice();
     } }] : [],
-    { label: "ดาวน์โหลดข้อความ", run: downloadReceiptText }
+    { label: "ดาวน์โหลดข้อความ", run: downloadReceiptText },
+    ...state.page === "results" || draftBlocked ? [{ label: "ดาวน์โหลดฉบับร่าง", run: downloadReceiptWork }] : []
   ]
 }, fallback: receiptActionFallback });
 function showStorageNotice() {
@@ -3798,7 +4029,7 @@ function startNewReceipt() {
   receiptCommitted = false;
   lastDraft = null;
   rawDraftEvidence = null;
-  reviewModel.replace({ ...reviewModel.getSnapshot(), rows: [], summarySource: null, summaryEdits: { service_charge_rate: null, vat_rate: null, discount_rate: null, discount_amount: null }, discountCanonical: "rate" });
+  reviewModel.replace({ ...reviewModel.getSnapshot(), rows: [], summarySource: null, summaryIssues: {}, summaryEdits: { service_charge_rate: null, vat_rate: null, discount_rate: null, discount_amount: null }, discountCanonical: "rate" });
   textHistory.reset("");
   Object.assign(state, { raw: "", page: "input", editing: null });
   visionState.statusMsg = "";
@@ -3826,6 +4057,11 @@ async function showReceiptWarnings() {
   if (state.page !== "results" || !lastDraft || warnedDraft === lastDraft.id || targetError || draftBlocked || draftStorageFailed || draftNotice || sheetOpen()) return;
   const notes = [...lastDraft.notices ?? [], ...state.rows.flatMap((row) => (row.flags ?? []).filter((flag) => flag.type === "calc_mismatch").map((flag) => row.itemName + ": " + flag.msg))];
   warnedDraft = lastDraft.id;
+  const issues = reviewAdmission(reviewData()).issues.filter((issue) => issue.rowId || issue.kind);
+  if (issues.length) {
+    notes.push("ยอดที่แสดงใช้ 0 แทนราคาที่อ่านไม่ได้ เช็กช่องที่มีเครื่องหมาย ? ก่อนเพิ่มลงบิล");
+    notes.push(...new Set(issues.map((issue) => issue.message)));
+  }
   if (!notes.length) return;
   await openSheet({
     title: "หมายเหตุ",
@@ -3852,6 +4088,7 @@ function render() {
     raw: state.raw,
     page: state.page,
     editing: structuredClone(state.editing),
+    draft: lastDraft,
     draftNotice,
     vision: { ...visionState },
     history: state.page === "input" ? { canUndo: textHistory.canUndo(state.raw), canRedo: textHistory.canRedo } : { canUndo: reviewModel.canUndo, canRedo: reviewModel.canRedo }
@@ -3860,7 +4097,17 @@ function render() {
   showStorageNotice();
 }
 function showImportError(message) {
-  showReceiptError(message);
+  if (targetError || sheetOpen()) return;
+  void openSheet({
+    title: "หมายเหตุ",
+    actions: [{ label: "ตกลง", className: "sheet-primary", value: true }],
+    fallback: receiptActionFallback,
+    mount: (host) => {
+      const p = document.createElement("p");
+      p.textContent = message;
+      host.body.append(p);
+    }
+  });
 }
 var importController = createReceiptImportController({
   getSession: () => billSession,
@@ -3892,7 +4139,8 @@ var importController = createReceiptImportController({
   returnToBill
 });
 async function submitReceipt() {
-  if (importController.busy) return;
+  if (importController.busy || editors.composing) return;
+  document.activeElement?.blur();
   const pending = importController.submit();
   receiptInteraction.setBusy(importController.busy);
   try {
@@ -3945,8 +4193,10 @@ var receiptActions = {
     render();
   },
   cancelEdit() {
+    const previous = state.editing;
     state.editing = null;
     render();
+    if (previous) document.querySelector(`[data-edit-cell="${CSS.escape(previous.rowId)}:${previous.field}"]`)?.focus();
   },
   startEdit,
   commitRow: commitEdit,
@@ -3954,9 +4204,9 @@ var receiptActions = {
   deleteRow,
   swapAll: handleSwap,
   swapRow,
-  editSummary(kind, field, value, { render: shouldRender = true, ...options } = {}) {
-    reviewModel.editSummary(kind, field, value, options);
-    if (shouldRender) render();
+  editSummary(kind, field, value) {
+    reviewModel.editSummary(kind, field, value);
+    render();
   }
 };
 var savedCache = null;
@@ -3998,6 +4248,19 @@ onReceipt("compositionend", () => {
 });
 async function checkTarget() {
   if (importController.busy) return;
+  if (!draftReadSucceeded && tabStorage) {
+    try {
+      const recovered = tabStorage.getItem(draftKey);
+      draftReadSucceeded = true;
+      rawDraftEvidence = recovered;
+      if (recovered !== null) {
+        draftBlocked = true;
+        draftNotice = "พบฉบับร่างเดิม ดาวน์โหลดฉบับร่างไว้ก่อนเริ่มแยกเมนูใหม่";
+      }
+    } catch {
+      draftStorageFailed = true;
+    }
+  }
   if (!repository) {
     try {
       repository = await openBillRepository();

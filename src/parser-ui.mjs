@@ -1,15 +1,14 @@
 import {renderInput,renderReview,renderReceiptVision,showReceiptError,updateReceiptTextControls,receiptActionFallback} from './receipt-view.mjs';
 import {createReceiptOcrController} from './receipt-ocr-controller.mjs';
 import {createReceiptImportController} from './receipt-import-controller.mjs';
-import {createReceiptReviewModel} from './receipt-review-model.mjs';
+import {createReceiptReviewModel,createManualReviewRow} from './receipt-review-model.mjs';
 import {createReceiptTextHistory} from './receipt-text-history.mjs';
 import {createBillSession} from './bill-session.mjs';
 import {receiptDraftKey} from './bill-work-keys.mjs';
 import {createEditorActions} from './editor-actions.mjs';
 import {openReceiptImport} from './receipt-import-dialog.mjs';
 import {createRecoveryNotice,openSheet,sheetOpen} from './in-app-confirm.mjs';
-import {initializeSummaryEdits} from './receipt-parser.mjs';
-import {createReceiptReview,normalizeReviewDraft,reviewSubtotal} from './receipt-draft.mjs';
+import {createReceiptReview,normalizeReviewDraft,reviewAdmission} from './receipt-draft.mjs';
 import {createOcrReader,browserWorker,prepareImage} from './ocr-reader.mjs';
 import {openBillRepository} from './bill-repository.mjs';
 import {newId} from './bill-state.mjs';
@@ -122,6 +121,10 @@ const uid=newId;
 let parseGeneration=0,textGeneration=0;
 async function parseCurrentText(raw=state.raw,isCurrent=()=>true){
   if(!raw.trim())return;
+  if(draftBlocked){
+    const replace=await openSheet({title:'เริ่มแยกเมนูจากข้อความนี้หรือไม่?',body:'<p>ฉบับร่างเดิมยังเปิดไม่ได้ ดาวน์โหลดฉบับร่างเดิมไว้ก่อนเริ่มใหม่</p>',actions:[{label:'ยกเลิก',value:false},{label:'ดาวน์โหลดฉบับร่างและเริ่มใหม่',run:async()=>{downloadReceiptWork();return true;}}],fallback:receiptActionFallback});
+    if(!replace)return;
+  }
   const token=++parseGeneration,inputGeneration=textGeneration;
   const current=()=>token===parseGeneration&&inputGeneration===textGeneration&&isCurrent();
   let result,loaded;
@@ -141,9 +144,8 @@ async function parseCurrentText(raw=state.raw,isCurrent=()=>true){
   else if(loaded){targetMissing=loaded.status==='missing';targetError=loaded.message;}
   if(resume){state.page='results';render();void showReceiptWarnings();return;}
   lastDraft=result.draft;receiptCommitted=false;
-  const subtotal=reviewSubtotal(result);
-  reviewModel.replace({...reviewModel.getSnapshot(),rows:result.rows,summarySource:result.summarySource,
-    importMode:'append',importAssignments:'all',summaryEdits:initializeSummaryEdits(subtotal,result.summarySource),
+  reviewModel.replace({...reviewModel.getSnapshot(),rows:result.rows,summarySource:result.summarySource,summaryIssues:result.summaryIssues,
+    importMode:'append',importAssignments:'all',summaryEdits:result.summaryEdits,
     discountCanonical:result.summarySource?.discount?.mode==='amount'?'amount':'rate'});
   draftBlocked=false;draftNotice='';state.page='results';state.editing=null;render();void showReceiptWarnings();
 }
@@ -151,7 +153,7 @@ const reviewModel = createReceiptReviewModel();
 const textHistory = createReceiptTextHistory('');
 const state = {page:'input',raw:'',editing:null};
 // Presentation reads copies from the model; there are no writable review arrays here.
-for (const key of ['rows','summarySource','summaryEdits','discountCanonical','colOrder','importMode','importAssignments']) {
+for (const key of ['rows','summarySource','summaryIssues','summaryEdits','discountCanonical','colOrder','importMode','importAssignments']) {
   Object.defineProperty(state,key,{get:()=>reviewModel.getSnapshot()[key]});
 }
 let textDebounceTimer = null;
@@ -165,9 +167,8 @@ function syncTextDOM(){const ta=document.getElementById("receiptText");if(ta)ta.
 function updateTextUndoRedoBtns(){receiptHistory?.update({canUndo:textHistory.canUndo(state.raw),canRedo:textHistory.canRedo});}
 function undo(){if(!reviewModel.canUndo)return;reviewModel.undo();state.editing=null;render();}
 function redo(){if(!reviewModel.canRedo)return;reviewModel.redo();state.editing=null;render();}
-function updateRow(id,patch){reviewModel.updateRow(id,patch);render();}
 function addRow(){
-  const row={id:uid(),rawLine:'',itemName:'เมนูใหม่',qty:1,priceSource:'line_total',priceValue:0,needsReview:false,isDiscount:false,flags:[]};
+  const row=createManualReviewRow(uid());
   reviewModel.addRow(row);state.editing={rowId:row.id,field:'itemName'};render();
   const input=document.querySelector(`[data-edit-input="${CSS.escape(row.id)}:itemName"]`);
   if(input){input.focus({preventScroll:true});input.select();requestAnimationFrame(()=>{if(input.isConnected)input.scrollIntoView({block:'center',behavior:'auto'});});}
@@ -176,8 +177,8 @@ function deleteRow(id){reviewModel.deleteRow(id);render();}
 function handleSwap(){reviewModel.swapPrices(null);render();}
 function swapRow(id){reviewModel.swapPrices(id);render();}
 function startEdit(rowId,field){state.editing={rowId,field};render();const el=document.querySelector(`[data-edit-input="${CSS.escape(rowId)}:${field}"]`);if(!el)return;el.focus();if(field!=="itemName"&&typeof el.select==="function")el.select();}
-function commitEdit(rowId,field,value){const row=state.rows.find(r=>r.id===rowId);if(!row){state.editing=null;render();return;}state.editing=null;if(field==="itemName"){const trimmed=String(value).trim();updateRow(rowId,{itemName:trimmed||"เมนูใหม่",needsReview:false});return;}if(field==="qty"){const n=Math.min(99,Math.max(1,Math.round(parseFloat(String(value).replace(/,/g,""))||1)));updateRow(rowId,{qty:n,qtyWasNull:false,needsReview:false});return;}if(field==="unit_price"||field==="line_total"){const n=parseFloat(String(value).replace(/,/g,""))||0;const safeN=Math.max(0,n);updateRow(rowId,{priceValue:safeN,priceSource:field,needsReview:false});return;}}
-function persistDraft(){if(draftBlocked||!billId||targetError)return false;if(!Number.isSafeInteger(baseRevision)){draftStorageFailed=true;return false;}try{if(!tabStorage)throw Error();const raw=JSON.stringify(reviewData());tabStorage.setItem(draftKey,raw);if(tabStorage.getItem(draftKey)!==raw)throw Error();draftStorageFailed=false;rawCheckpointPending=false;return true;}catch{draftStorageFailed=true;return false;}}
+function commitEdit(rowId,field,value){state.editing=null;reviewModel.editRow(rowId,field,value);render();}
+function persistDraft(){if(draftBlocked||!draftReadSucceeded||!billId||targetError){if(!draftReadSucceeded)draftStorageFailed=true;return false;}if(!Number.isSafeInteger(baseRevision)){draftStorageFailed=true;return false;}try{if(!tabStorage)throw Error();const candidate=reviewData();normalizeReviewDraft(candidate);const raw=JSON.stringify(candidate);tabStorage.setItem(draftKey,raw);if(tabStorage.getItem(draftKey)!==raw)throw Error();draftStorageFailed=false;rawCheckpointPending=false;rawDraftEvidence=raw;return true;}catch{draftStorageFailed=true;return false;}}
 function flushRawCheckpoint(){
   if(!rawCheckpointPending)return true;
   // A new input checkpoint must not overwrite bytes the initial read could not inspect.
@@ -199,8 +200,8 @@ function downloadReceiptText(){
 let restoredText='';
 function downloadReceiptWork(){
   let raw=JSON.stringify(reviewData());
-  if(draftBlocked&&rawDraftEvidence!==null){
-    raw=state.raw===restoredText?rawDraftEvidence:JSON.stringify({source:rawDraftEvidence,receiptText:state.raw});
+  if((draftBlocked||draftStorageFailed)&&rawDraftEvidence!==null){
+    raw=draftBlocked&&state.raw===restoredText?rawDraftEvidence:JSON.stringify({source:rawDraftEvidence,current:reviewData(),receiptText:state.raw});
   }
   downloadReceiptData(raw,'หารจ่ายแฟร์ๆ-receipt-draft-evidence.json','application/json');
 }
@@ -223,7 +224,8 @@ const recovery=createRecoveryNotice({getModel:async()=>editors.composing?null:({
   dismissLabel:'แก้ต่อ',
   actions:[
     ...(!targetMissing&&repository?.connectionError!=='VersionError'?[{label:'ลองบันทึกอีกครั้ง',run:async()=>{await checkTarget();persistDraft();showStorageNotice();}}]:[]),
-    {label:'ดาวน์โหลดข้อความ',run:downloadReceiptText}
+    {label:'ดาวน์โหลดข้อความ',run:downloadReceiptText},
+    ...(state.page==='results'||draftBlocked?[{label:'ดาวน์โหลดฉบับร่าง',run:downloadReceiptWork}]:[])
   ]
 }),fallback:receiptActionFallback});
 function showStorageNotice(){
@@ -232,7 +234,7 @@ function showStorageNotice(){
 function startNewReceipt(){
   textGeneration++;parseGeneration++;
   receiptCommitted=false;lastDraft=null;rawDraftEvidence=null;
-  reviewModel.replace({...reviewModel.getSnapshot(),rows:[],summarySource:null,summaryEdits:{service_charge_rate:null,vat_rate:null,discount_rate:null,discount_amount:null},discountCanonical:'rate'});
+  reviewModel.replace({...reviewModel.getSnapshot(),rows:[],summarySource:null,summaryIssues:{},summaryEdits:{service_charge_rate:null,vat_rate:null,discount_rate:null,discount_amount:null},discountCanonical:'rate'});
   textHistory.reset('');Object.assign(state,{raw:'',page:'input',editing:null});
   visionState.statusMsg='';visionState.statusKind='';render();
 }
@@ -251,6 +253,11 @@ async function showReceiptWarnings(){
   if(state.page!=='results'||!lastDraft||warnedDraft===lastDraft.id||targetError||draftBlocked||draftStorageFailed||draftNotice||sheetOpen())return;
   const notes=[...(lastDraft.notices??[]),...state.rows.flatMap(row=>(row.flags??[]).filter(flag=>flag.type==='calc_mismatch').map(flag=>row.itemName+': '+flag.msg))];
   warnedDraft=lastDraft.id;
+  const issues=reviewAdmission(reviewData()).issues.filter(issue=>issue.rowId||issue.kind);
+  if(issues.length){
+    notes.push('ยอดที่แสดงใช้ 0 แทนราคาที่อ่านไม่ได้ เช็กช่องที่มีเครื่องหมาย ? ก่อนเพิ่มลงบิล');
+    notes.push(...new Set(issues.map(issue=>issue.message)));
+  }
   if(!notes.length)return;
   await openSheet({title:'หมายเหตุ',className:'receipt-warnings',
     actions:[{label:'ตกลง',className:'sheet-primary',value:true}],
@@ -263,13 +270,17 @@ function render(){
   clearTimeout(textDebounceTimer);textDebounceTimer=null;
   layoutCleanup();receiptHistory=null;persistDraft();
   const model={...reviewModel.getSnapshot(),raw:state.raw,page:state.page,editing:structuredClone(state.editing),
-    draftNotice,vision:{...visionState},history:state.page==='input'
+    draft:lastDraft,draftNotice,vision:{...visionState},history:state.page==='input'
       ?{canUndo:textHistory.canUndo(state.raw),canRedo:textHistory.canRedo}
       :{canUndo:reviewModel.canUndo,canRedo:reviewModel.canRedo}};
   layoutCleanup=(state.page==='input'?renderInput:renderReview)(model,receiptActions);
   showStorageNotice();
 }
-function showImportError(message){showReceiptError(message);}
+function showImportError(message){
+  if(targetError||sheetOpen())return;
+  void openSheet({title:'หมายเหตุ',actions:[{label:'ตกลง',className:'sheet-primary',value:true}],fallback:receiptActionFallback,
+    mount:host=>{const p=document.createElement('p');p.textContent=message;host.body.append(p);}});
+}
 const importController=createReceiptImportController({
   getSession:()=>billSession,getReview:reviewData,
   getStatus:()=>({composing:editors.composing,targetError,draftBlocked}),
@@ -285,7 +296,8 @@ const importController=createReceiptImportController({
   },returnToBill
 });
 async function submitReceipt(){
-  if(importController.busy)return;
+  if(importController.busy||editors.composing)return;
+  document.activeElement?.blur();
   const pending=importController.submit();
   // The dialog owns progress and its own actions. Its background also rejects
   // programmatic activation; native modal inertness alone only covers user input.
@@ -299,9 +311,9 @@ const receiptActions={
   rawChanged(raw){textGeneration++;if(raw!==state.raw){state.raw=raw;rawCheckpointPending=true;}clearTimeout(textDebounceTimer);updateTextUndoRedoBtns();textDebounceTimer=setTimeout(()=>{textDebounceTimer=null;pushTextHistory(state.raw);updateTextUndoRedoBtns();flushRawCheckpoint();},500);},
   async parse(){try{await parseCurrentText();}catch(error){console.error('Parse failed:',error);visionState.statusMsg='แยกเมนูยังไม่ได้ ลองเช็กข้อความแล้วกดอีกครั้ง';visionState.statusKind='error';renderVisionZone();}},
   backToInput(){parseGeneration++;state.page='input';state.editing=null;render();},
-  cancelEdit(){state.editing=null;render();},
+  cancelEdit(){const previous=state.editing;state.editing=null;render();if(previous)document.querySelector(`[data-edit-cell="${CSS.escape(previous.rowId)}:${previous.field}"]`)?.focus();},
   startEdit,commitRow:commitEdit,addRow,deleteRow,swapAll:handleSwap,swapRow,
-  editSummary(kind,field,value,{render:shouldRender=true,...options}={}){reviewModel.editSummary(kind,field,value,options);if(shouldRender)render();}
+  editSummary(kind,field,value){reviewModel.editSummary(kind,field,value);render();}
 };
 let savedCache=null;
 try{
@@ -331,6 +343,12 @@ onReceipt('beforeunload',event=>{if(leavingReceipt)return;flushRawCheckpoint();i
 onReceipt('compositionend',()=>{if(!editors.composing)showStorageNotice();});
 async function checkTarget(){
   if(importController.busy)return;
+  if(!draftReadSucceeded&&tabStorage){
+    try{
+      const recovered=tabStorage.getItem(draftKey);draftReadSucceeded=true;rawDraftEvidence=recovered;
+      if(recovered!==null){draftBlocked=true;draftNotice='พบฉบับร่างเดิม ดาวน์โหลดฉบับร่างไว้ก่อนเริ่มแยกเมนูใหม่';}
+    }catch{draftStorageFailed=true;}
+  }
   if(!repository){try{repository=await openBillRepository();if(billId)billSession=createBillSession({repository,billId,sessionStorage:tabStorage});}catch(error){targetError=error.message;showStorageNotice();return;}}
   if(!billSession)return;
   try{const latest=await repository.read(billId);if(!latest){targetMissing=true;targetError='ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์';showImportError(targetError);showStorageNotice();}else{targetMissing=false;targetError='';showStorageNotice();if(latest.recordRevision!==baseRevision)showImportError('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดก่อนเพิ่มเมนู');}}

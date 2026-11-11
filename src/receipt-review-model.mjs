@@ -1,10 +1,10 @@
 import {createHistory} from './history.mjs';
-import {receiptSummary, reviewSubtotal} from './receipt-draft.mjs';
+import {receiptNumber,emptyReceiptEvidence,fieldIssue} from './receipt-fields.mjs';
 
-const roundMoney = value => Math.round(value * 100) / 100;
-const fields = ['rows','summarySource','summaryEdits','discountCanonical','colOrder','importMode','importAssignments'];
+export function createManualReviewRow(id){return {id,rawLine:'',itemName:'เมนูใหม่',qty:1,priceSource:'line_total',priceValue:null,needsReview:true,isDiscount:false,flags:[],evidence:emptyReceiptEvidence(),issues:{price:fieldIssue('missing','line_total')},priceEdited:false};}
+const fields = ['rows','summarySource','summaryEdits','summaryIssues','discountCanonical','colOrder','importMode','importAssignments'];
 function snapshot(review = {}) {
-  const defaults = {rows:[], summarySource:null,
+  const defaults = {rows:[], summarySource:null,summaryIssues:{},
     summaryEdits:{service_charge_rate:null,vat_rate:null,discount_rate:null,discount_amount:null},
     discountCanonical:'rate',colOrder:['unit_price','line_total'],importMode:'append',importAssignments:'all'};
   return Object.fromEntries(fields.map(field => [field, structuredClone(review[field] ?? defaults[field])]));
@@ -31,27 +31,39 @@ export function createReceiptReviewModel(initialReview) {
     updateRow(id, patch) {
       return edit(review => { review.rows = review.rows.map(row => row.id === id ? {...row,...structuredClone(patch)} : row); });
     },
+    editRow(id,field,input){
+      return edit(review=>{const row=review.rows.find(r=>r.id===id);if(!row)return;
+        if(field==='itemName'){row.itemName=String(input).trim()||'เมนูใหม่';return;}
+        const qty=field==='qty',key=qty?'qty':'price',value=receiptNumber(input,{quantity:qty});
+        row.issues={...row.issues};
+        if(value===null){row.issues[key]=fieldIssue(String(input).trim()===''?'missing':'invalid',field,String(input));row[qty?'qty':'priceValue']=null;if(!qty)row.priceSource=field;return;}
+        row[qty?'qty':'priceValue']=value;delete row.issues[key];
+        if(qty)row.qtyWasNull=false;else{row.priceSource=field;row.priceEdited=true;}
+      });
+    },
     addRow(row) { return edit(review => { review.rows.push(structuredClone(row)); }, {force:true}); },
     deleteRow(id) { return edit(review => { review.rows = review.rows.filter(row => row.id !== id); }, {force:true}); },
     swapPrices(idOrNull = null) {
       return edit(review => {
-        review.rows = review.rows.map(row => idOrNull == null || row.id === idOrNull
-          ? {...row,priceSource:row.priceSource === 'line_total' ? 'unit_price' : 'line_total'} : row);
+        review.rows = review.rows.map(row => {
+          if(idOrNull!==null&&row.id!==idOrNull)return row;
+          const priceSource=row.priceSource==='line_total'?'unit_price':'line_total';
+          return {...row,priceSource,priceEdited:true,issues:{...row.issues,...(row.issues?.price?{price:{...row.issues.price,editField:priceSource}}:{})}};
+        });
       }, {force:true});
     },
     editSummary(kind, field, value, {forceHistory = false} = {}) {
       return edit(review => {
-        const subtotal = reviewSubtotal(review);
-        const current = receiptSummary(subtotal, review.summarySource, review.summaryEdits, review.discountCanonical);
-        const parsed = parseFloat(String(value).replace(/,/g, '').replace(/-/g, ''));
-        const amount = Number.isFinite(parsed) ? Math.abs(parsed) : 0;
+        const amount=receiptNumber(String(value),{summary:true});
+        review.summaryIssues={...review.summaryIssues};
+        if(amount===null){review.summaryIssues[kind]=fieldIssue(String(value).trim()===''?'missing':'invalid',field,String(value));return;}
+        delete review.summaryIssues[kind];
         if (kind === 'service_charge' || kind === 'vat') {
           review.summarySource = {...review.summarySource, [kind]:{
             ...review.summarySource?.[kind],mode:field === 'rate' ? 'percent' : 'amount',value:amount
           }};
-          const basis = kind === 'vat' ? roundMoney(subtotal + current.service_charge.amount) : subtotal;
           review.summaryEdits = {...review.summaryEdits,
-            [kind + '_rate']:field === 'rate' ? amount : basis > 0 ? amount / basis * 100 : 0};
+            [kind + '_rate']:field === 'rate' ? amount : null};
         } else if (kind === 'discount') {
           review.discountCanonical = field === 'rate' ? 'rate' : 'amount';
           review.summaryEdits = {...review.summaryEdits,

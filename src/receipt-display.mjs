@@ -12,10 +12,10 @@ export function formatPctForDisplay(rate) {
   const r = Math.round(rate * 100) / 100;
   return Number.isInteger(r) ? String(r) : r.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
-function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel='') {
+function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel='',issue=null) {
   const fields = [['rate',rate,'%'],['amount',amount,'฿']].map(([field,value,unit])=>
     `<div class="sum-field ${field===canonical?'canonical':'derived'}">
-      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" value="${escapeHtml(value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
+      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" aria-invalid="${issue?.editField===field?'true':'false'}" placeholder="0" value="${escapeHtml(issue?.editField===field?issue.input??'':value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
       <span class="sum-field-lbl" aria-hidden="true">${unit}</span>
     </div>`).join('');
   const responsiveLabel = shortLabel ? ` data-full-label="${label}" data-short-label="${shortLabel}"` : '';
@@ -25,11 +25,11 @@ function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel='
   </div>`;
 }
 export function renderChargeCard(kind, label, view, shortLabel) {
-  return renderAdjustmentCard(kind,label,formatPctForDisplay(view.rate),formatMoneyDisplay(view.amount),'rate',shortLabel);
+  return renderAdjustmentCard(kind,label,view.rate===null?'':formatPctForDisplay(view.rate),view.amount===null?'':formatMoneyDisplay(view.amount),'rate',shortLabel,view.issue);
 }
 export function renderDiscountCard(view) {
-  return renderAdjustmentCard('discount','ส่วนลด',formatPctForDisplay(view.rate),
-    formatMoney(Math.abs(view.amount)),view.mode==='rate'?'rate':'amount');
+  return renderAdjustmentCard('discount','ส่วนลด',view.rate===null?'':formatPctForDisplay(view.rate),
+    view.amount===null?'':formatMoney(Math.abs(view.amount)),view.mode==='rate'?'rate':'amount','',view.issue);
 }
 export function flattenHtmlTable(html) {
   if (!/<table|<tr/i.test(html)) return null;
