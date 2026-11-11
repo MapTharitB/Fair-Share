@@ -1,14 +1,12 @@
-import {buildReviewedDraft,copyReceiptForImport,reviewAdmission} from './receipt-draft.mjs';
+import {copyReceiptForImport,prepareReceiptImport} from './receipt-draft.mjs';
 import {importReceipt} from './receipt-import.mjs';
 
 /** Coordinate a submission; the choice sheet retains its repeatable onConfirm callback. */
 export function createReceiptImportController({getSession,getReview,getStatus,setBaseRevision,
-  setOptions,persistDraft,confirmRepeat,chooseImport,onCommitted,onError,returnToBill}) {
+  setOptions,persistDraft,confirmUnresolved,confirmRepeat,chooseImport,onCommitted,onError,returnToBill}) {
   let busy = false;
   async function submit() {
     if (busy || getStatus().composing) return;
-    const admission=reviewAdmission(getReview());
-    if(!admission.ok)return;
     busy = true;
     let repeatNeeded = false;
     try {
@@ -21,8 +19,11 @@ export function createReceiptImportController({getSession,getReview,getStatus,se
       const loaded = await session.load();
       if (loaded.status !== 'loaded') throw Error(loaded.message);
       const review = getReview();
+      const candidate = prepareReceiptImport(review);
+      if (!candidate.draft) throw Error(candidate.issues[0].message);
+      if (candidate.issues.length && !await confirmUnresolved(candidate.issues)) return;
       const repeated = session.current.imports.includes(review.draft?.id);
-      let prepared = buildReviewedDraft(review);
+      let prepared = candidate.draft;
       if (repeated) {
         if (!await confirmRepeat()) return;
         prepared = copyReceiptForImport(prepared);

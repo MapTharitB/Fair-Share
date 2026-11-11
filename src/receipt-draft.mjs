@@ -96,9 +96,20 @@ function sameColumns(columns){return Array.isArray(columns)&&columns.length===2&
 
 const isReviewItem=row=>!row.isDiscount;
 function projectRows(rows,groupId){return rows.filter(isReviewItem).map(r=>({id:r.id,groupId,name:r.itemName,quantity:r.qty,priceSource:r.priceSource,priceCents:cents(String(r.priceValue)),assignments:[],rawLine:r.rawLine??''}));}
-function projectReview(review){
+export function receiptPreviewSummary(review,subtotal=reviewSubtotal(review)){
+  const sources={...review.summarySource},edits={...review.summaryEdits};
+  for(const kind of Object.keys(review.summaryIssues??{})){
+    sources[kind]=null;
+    edits[kind+'_rate']=0;
+    if(kind==='discount')edits.discount_amount=0;
+  }
+  return receiptSummary(subtotal,sources,edits,review.discountCanonical);
+}
+function projectReview(review,withFallbacks){
+  if(withFallbacks)review={...review,rows:review.rows.map(row=>({...row,qty:row.qty??1,priceValue:row.priceValue??0}))};
   const draft=clone(review.draft);draft.items=projectRows(review.rows,draft.group.id);
-  const view=receiptSummary(reviewSubtotal(review),review.summarySource,review.summaryEdits,review.discountCanonical);
+  const view=withFallbacks?receiptPreviewSummary(review):receiptSummary(reviewSubtotal(review),review.summarySource,review.summaryEdits,review.discountCanonical);
+  if(view.total<0)throw Error('เช็กส่วนลด ยอดที่ต้องจ่ายต้องไม่ต่ำกว่า 0');
   for(const [key,field] of [['service','service_charge'],['tax','vat'],['discount','discount']]){
     const rate=key==='discount'?review.discountCanonical==='rate'&&!review.summarySource?.discount?.extraAmountSum:review.summarySource?.[field]?.mode==='percent';
     const value=rate?view[field].rate:view[field].amount;
@@ -109,9 +120,9 @@ function projectReview(review){
   draft.group.placement='after_sc_vat';
   return draft;
 }
-export function reviewAdmission(review){
+function assessReview(review,allowUnresolved=false){
   const issues=[];
-  try{validateReview(review);}catch(error){return {ok:false,issues:[{structural:true,message:error.message}]};}
+  try{validateReview(review);}catch(error){return {issues:[{structural:true,message:error.message}]};}
   if(!review.rows.some(isReviewItem))issues.push({message:'ยังไม่มีเมนูให้เพิ่ม'});
   if(review.page!=='results')issues.push({message:'กลับไปตรวจสอบเมนูก่อนเพิ่มลงบิล'});
   for(const row of review.rows.filter(isReviewItem)){
@@ -119,16 +130,26 @@ export function reviewAdmission(review){
     if(!row.issues.price&&row.priceValue!==null&&row.qty!==null)try{itemTotal({quantity:row.qty,priceSource:row.priceSource,priceCents:cents(String(row.priceValue))});}catch{issues.push({rowId:row.id,field:'price',editField:row.priceSource});}
   }
   for(const [kind,issue] of Object.entries(review.summaryIssues))issues.push({kind,field:issue.editField});
-  if(!issues.length)try{
-    const draft=projectReview(review),bill=emptyBill();bill.groups.push(draft.group);bill.items=draft.items;validateBill(bill);calculate(bill);
-    const view=receiptSummary(reviewSubtotal(review),review.summarySource,review.summaryEdits,review.discountCanonical);
-    if(view.total<0)throw Error('เช็กส่วนลด ยอดที่ต้องจ่ายต้องไม่ต่ำกว่า 0');
-  }catch(error){issues.push({message:error.message});}
-  return {ok:!issues.length,issues:issues.map(issue=>({...issue,message:receiptIssueMessage(issue)}))};
+  const result={issues:issues.map(issue=>({...issue,message:receiptIssueMessage(issue)}))};
+  if(issues.length&&(!allowUnresolved||issues.some(issue=>!issue.rowId&&!issue.kind)))return result;
+  try{
+    const draft=projectReview(review,issues.length>0),bill=emptyBill();
+    bill.groups.push(draft.group);bill.items=draft.items;validateBill(bill);calculate(bill);
+    return {...result,draft};
+  }catch(error){return {issues:[{message:error.message}]};}
+}
+export function reviewAdmission(review){
+  const {issues}=assessReview(review);
+  return {ok:!issues.length,issues};
 }
 export function buildReviewedDraft(review){
-  const result=reviewAdmission(review);if(!result.ok)throw Error(result.issues[0].message);
-  return projectReview(review);
+  const {draft,issues}=assessReview(review);
+  if(!draft)throw Error(issues[0].message);
+  return draft;
+}
+// The UI must ask for consent before handing a candidate with issues to importReceipt.
+export function prepareReceiptImport(review){
+  return assessReview(review,true);
 }
 // A deliberate repeat is a new import, while retries reuse this one copy.
 export function copyReceiptForImport(draft){

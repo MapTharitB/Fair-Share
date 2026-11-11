@@ -42,6 +42,12 @@ body{font-family:var(--font-receipt-body);color:var(--color-text);height:100%;ov
 .parse-wrap-inner{width:100%;padding:var(--space-12) var(--space-16);padding-bottom:max(var(--space-12),env(safe-area-inset-bottom,0px));}
 .ta-card{flex:1;display:flex;flex-direction:column;border-width:var(--border-thin);border-style:solid;border-radius:var(--radius-card);margin-bottom:var(--space-12);transition:border-color .2s;min-height:0;}
 .ta-card:focus-within{border-color:var(--color-accent-input-focus);}
+.receipt-ta{scrollbar-width:none}
+.receipt-ta::-webkit-scrollbar{width:0;height:0}
+.receipt-unresolved .sheet-primary{
+  --action-surface:var(--surface-raised-navy);
+  --action-rim:var(--color-history-rim);
+}
 .ta-bar{display:flex;align-items:center;justify-content:space-between;padding:var(--space-10) var(--space-14);border-bottom:var(--border-thin) solid var(--color-border);gap:var(--space-8);flex-shrink:0;}
 .ur-bar-btn{padding:var(--space-6) 44px;min-width:130px;font-size:var(--text-12);}
 .pg-results{min-height:100vh;padding:0 var(--space-14) 0;}

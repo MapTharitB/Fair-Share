@@ -1379,10 +1379,21 @@ var isReviewItem = (row) => !row.isDiscount;
 function projectRows(rows, groupId) {
   return rows.filter(isReviewItem).map((r) => ({ id: r.id, groupId, name: r.itemName, quantity: r.qty, priceSource: r.priceSource, priceCents: cents(String(r.priceValue)), assignments: [], rawLine: r.rawLine ?? "" }));
 }
-function projectReview(review) {
+function receiptPreviewSummary(review, subtotal = reviewSubtotal(review)) {
+  const sources = { ...review.summarySource }, edits = { ...review.summaryEdits };
+  for (const kind of Object.keys(review.summaryIssues ?? {})) {
+    sources[kind] = null;
+    edits[kind + "_rate"] = 0;
+    if (kind === "discount") edits.discount_amount = 0;
+  }
+  return receiptSummary(subtotal, sources, edits, review.discountCanonical);
+}
+function projectReview(review, withFallbacks) {
+  if (withFallbacks) review = { ...review, rows: review.rows.map((row) => ({ ...row, qty: row.qty ?? 1, priceValue: row.priceValue ?? 0 })) };
   const draft = clone(review.draft);
   draft.items = projectRows(review.rows, draft.group.id);
-  const view = receiptSummary(reviewSubtotal(review), review.summarySource, review.summaryEdits, review.discountCanonical);
+  const view = withFallbacks ? receiptPreviewSummary(review) : receiptSummary(reviewSubtotal(review), review.summarySource, review.summaryEdits, review.discountCanonical);
+  if (view.total < 0) throw Error("เช็กส่วนลด ยอดที่ต้องจ่ายต้องไม่ต่ำกว่า 0");
   for (const [key, field] of [["service", "service_charge"], ["tax", "vat"], ["discount", "discount"]]) {
     const rate = key === "discount" ? review.discountCanonical === "rate" && !review.summarySource?.discount?.extraAmountSum : review.summarySource?.[field]?.mode === "percent";
     const value = rate ? view[field].rate : view[field].amount;
@@ -1393,12 +1404,12 @@ function projectReview(review) {
   draft.group.placement = "after_sc_vat";
   return draft;
 }
-function reviewAdmission(review) {
+function assessReview(review, allowUnresolved = false) {
   const issues = [];
   try {
     validateReview(review);
   } catch (error) {
-    return { ok: false, issues: [{ structural: true, message: error.message }] };
+    return { issues: [{ structural: true, message: error.message }] };
   }
   if (!review.rows.some(isReviewItem)) issues.push({ message: "ยังไม่มีเมนูให้เพิ่ม" });
   if (review.page !== "results") issues.push({ message: "กลับไปตรวจสอบเมนูก่อนเพิ่มลงบิล" });
@@ -1411,23 +1422,30 @@ function reviewAdmission(review) {
     }
   }
   for (const [kind, issue] of Object.entries(review.summaryIssues)) issues.push({ kind, field: issue.editField });
-  if (!issues.length) try {
-    const draft = projectReview(review), bill = emptyBill();
+  const result = { issues: issues.map((issue) => ({ ...issue, message: receiptIssueMessage(issue) })) };
+  if (issues.length && (!allowUnresolved || issues.some((issue) => !issue.rowId && !issue.kind))) return result;
+  try {
+    const draft = projectReview(review, issues.length > 0), bill = emptyBill();
     bill.groups.push(draft.group);
     bill.items = draft.items;
     validateBill(bill);
     calculate(bill);
-    const view = receiptSummary(reviewSubtotal(review), review.summarySource, review.summaryEdits, review.discountCanonical);
-    if (view.total < 0) throw Error("เช็กส่วนลด ยอดที่ต้องจ่ายต้องไม่ต่ำกว่า 0");
+    return { ...result, draft };
   } catch (error) {
-    issues.push({ message: error.message });
+    return { issues: [{ message: error.message }] };
   }
-  return { ok: !issues.length, issues: issues.map((issue) => ({ ...issue, message: receiptIssueMessage(issue) })) };
+}
+function reviewAdmission(review) {
+  const { issues } = assessReview(review);
+  return { ok: !issues.length, issues };
 }
 function buildReviewedDraft(review) {
-  const result = reviewAdmission(review);
-  if (!result.ok) throw Error(result.issues[0].message);
-  return projectReview(review);
+  const { draft, issues } = assessReview(review);
+  if (!draft) throw Error(issues[0].message);
+  return draft;
+}
+function prepareReceiptImport(review) {
+  return assessReview(review, true);
 }
 function copyReceiptForImport(draft) {
   const next = clone(draft);
@@ -1611,7 +1629,7 @@ function renderInput(model, actions) {
         <div class="vision-zone" id="visionZone"></div>
         <div class="ta-card">
           <div class="ta-bar">
-            <span class="ta-lbl">ข้อความที่อ่าน/คัดลอกจากภาพใบเสร็จ</span>
+            <label class="ta-lbl" for="receiptText">ข้อความที่อ่าน/คัดลอกจากภาพใบเสร็จ</label>
             <button class="clear-ta-btn" id="clearTaBtn" ${!state2.raw ? "disabled" : ""}>ลบทั้งหมด</button>
           </div>
           <textarea class="receipt-ta" id="receiptText" placeholder="${RECEIPT_PLACEHOLDER}">${esc(state2.raw || "")}</textarea>
@@ -1665,7 +1683,6 @@ function renderReview(model, actions) {
   const app = document.getElementById("app"), state2 = model;
   let summaryFocusTarget = null;
   const subtotal = reviewSubtotal(state2);
-  const admission = reviewAdmission(state2);
   const summaryView = receiptSummary(subtotal, state2.summarySource, state2.summaryEdits, state2.discountCanonical);
   const foodUnknown = state2.rows.some((r) => !r.isDiscount && (r.qty === null || r.priceValue === null || Object.keys(r.issues ?? {}).length));
   const pending = Object.keys(state2.summaryIssues ?? {});
@@ -1678,13 +1695,7 @@ function renderReview(model, actions) {
     if (issue || foodUnknown && active2 && !fixed || kind === "vat" && pending.includes("service_charge") || kind === "discount" && pending.some((k) => k !== "discount")) v.amount = null;
     if (issue || foodUnknown && active2 && fixed) v.rate = null;
   }
-  const previewEdits = { ...state2.summaryEdits }, previewSources = { ...state2.summarySource };
-  for (const kind of pending) {
-    previewSources[kind] = null;
-    previewEdits[kind + "_rate"] = 0;
-    if (kind === "discount") previewEdits.discount_amount = 0;
-  }
-  const previewTotal = receiptSummary(subtotal, previewSources, previewEdits, state2.discountCanonical).total;
+  const previewTotal = receiptPreviewSummary(state2, subtotal).total;
   const showSC = summaryView.service_charge.amount > 0 || summaryView.service_charge.rate > 0;
   const showVAT = summaryView.vat.amount > 0 || summaryView.vat.rate > 0;
   const showDisc = summaryView.discount.amount > 0;
@@ -1743,7 +1754,7 @@ function renderReview(model, actions) {
       </table></div></div>
       <div class="results-bottom-spacer" aria-hidden="true"></div>
     </div></div>
-    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${admission.ok ? "" : "disabled"}>เพิ่มเมนูลงบิล</button></div></div>`;
+    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${firstItemRow ? "" : "disabled"}>เพิ่มเมนูลงบิล</button></div></div>`;
   const error = document.createElement("p");
   error.id = "receipt-import-error";
   error.className = "import-error";
@@ -1947,6 +1958,7 @@ function createReceiptImportController({
   setBaseRevision,
   setOptions,
   persistDraft: persistDraft2,
+  confirmUnresolved: confirmUnresolved2,
   confirmRepeat,
   chooseImport,
   onCommitted,
@@ -1956,8 +1968,6 @@ function createReceiptImportController({
   let busy = false;
   async function submit() {
     if (busy || getStatus().composing) return;
-    const admission = reviewAdmission(getReview());
-    if (!admission.ok) return;
     busy = true;
     let repeatNeeded = false;
     try {
@@ -1969,8 +1979,11 @@ function createReceiptImportController({
       const loaded = await session.load();
       if (loaded.status !== "loaded") throw Error(loaded.message);
       const review = getReview();
+      const candidate = prepareReceiptImport(review);
+      if (!candidate.draft) throw Error(candidate.issues[0].message);
+      if (candidate.issues.length && !await confirmUnresolved2(candidate.issues)) return;
       const repeated = session.current.imports.includes(review.draft?.id);
-      let prepared = buildReviewedDraft(review);
+      let prepared = candidate.draft;
       if (repeated) {
         if (!await confirmRepeat()) return;
         prepared = copyReceiptForImport(prepared);
@@ -4057,11 +4070,6 @@ async function showReceiptWarnings() {
   if (state.page !== "results" || !lastDraft || warnedDraft === lastDraft.id || targetError || draftBlocked || draftStorageFailed || draftNotice || sheetOpen()) return;
   const notes = [...lastDraft.notices ?? [], ...state.rows.flatMap((row) => (row.flags ?? []).filter((flag) => flag.type === "calc_mismatch").map((flag) => row.itemName + ": " + flag.msg))];
   warnedDraft = lastDraft.id;
-  const issues = reviewAdmission(reviewData()).issues.filter((issue) => issue.rowId || issue.kind);
-  if (issues.length) {
-    notes.push("ยอดที่แสดงใช้ 0 แทนราคาที่อ่านไม่ได้ เช็กช่องที่มีเครื่องหมาย ? ก่อนเพิ่มลงบิล");
-    notes.push(...new Set(issues.map((issue) => issue.message)));
-  }
   if (!notes.length) return;
   await openSheet({
     title: "หมายเหตุ",
@@ -4076,6 +4084,21 @@ async function showReceiptWarnings() {
       }
     }
   });
+}
+async function confirmUnresolved(issues) {
+  const choice = await openSheet({
+    title: "ยังมีรายการที่ต้องตรวจสอบ",
+    className: "receipt-unresolved",
+    body: "<p>แนะนำให้แก้ช่องที่ยังไม่ได้ยืนยันก่อนเพิ่มลงบิล</p><p>หากทำต่อ จะใช้จำนวนและราคาที่มีอยู่ ช่องที่ไม่มีจำนวนจะใช้ 1 ช่องที่ไม่มีราคาและค่าปรับยอดที่ยังไม่ได้ยืนยันจะใช้ 0</p>",
+    actions: [{ label: "แก้ไข", className: "sheet-primary", value: "edit" }, { label: "ทำต่อ", value: "continue" }],
+    fallback: receiptActionFallback
+  });
+  if (choice === "edit") {
+    const first = issues[0];
+    const field = first.rowId ? `[data-edit-cell="${CSS.escape(first.rowId)}:${first.editField}"],[data-edit-input="${CSS.escape(first.rowId)}:${first.editField}"]` : `[data-summary-input="${first.kind}:${first.field}"]`;
+    document.querySelector(field)?.focus();
+  }
+  return choice === "continue";
 }
 function render() {
   clearTimeout(textDebounceTimer);
@@ -4118,6 +4141,7 @@ var importController = createReceiptImportController({
   },
   setOptions: (options) => reviewModel.setImportOptions(options),
   persistDraft,
+  confirmUnresolved,
   confirmRepeat: () => openSheet({
     title: "เพิ่มใบเสร็จเดิมอีกครั้งหรือไม่?",
     body: "<p>เคยเพิ่มใบเสร็จนี้ลงบิลไปแล้ว หากเพิ่มต่อจะซ้ำเมนูเดิม</p>",
@@ -4139,7 +4163,7 @@ var importController = createReceiptImportController({
   returnToBill
 });
 async function submitReceipt() {
-  if (importController.busy || editors.composing) return;
+  if (importController.busy || editors.composing || document.getElementById("submitBtn")?.disabled) return;
   document.activeElement?.blur();
   const pending = importController.submit();
   receiptInteraction.setBusy(importController.busy);
@@ -4274,17 +4298,10 @@ async function checkTarget() {
   if (!billSession) return;
   try {
     const latest = await repository.read(billId);
-    if (!latest) {
-      targetMissing = true;
-      targetError = "ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์";
-      showImportError(targetError);
-      showStorageNotice();
-    } else {
-      targetMissing = false;
-      targetError = "";
-      showStorageNotice();
-      if (latest.recordRevision !== baseRevision) showImportError("บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดก่อนเพิ่มเมนู");
-    }
+    targetMissing = !latest;
+    targetError = latest ? "" : "ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์";
+    if (targetMissing) showImportError(targetError);
+    showStorageNotice();
   } catch (error) {
     targetError = error.message;
     showImportError(targetError);

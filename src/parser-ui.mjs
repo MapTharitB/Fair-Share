@@ -8,7 +8,7 @@ import {receiptDraftKey} from './bill-work-keys.mjs';
 import {createEditorActions} from './editor-actions.mjs';
 import {openReceiptImport} from './receipt-import-dialog.mjs';
 import {createRecoveryNotice,openSheet,sheetOpen} from './in-app-confirm.mjs';
-import {createReceiptReview,normalizeReviewDraft,reviewAdmission} from './receipt-draft.mjs';
+import {createReceiptReview,normalizeReviewDraft} from './receipt-draft.mjs';
 import {createOcrReader,browserWorker,prepareImage} from './ocr-reader.mjs';
 import {openBillRepository} from './bill-repository.mjs';
 import {newId} from './bill-state.mjs';
@@ -253,17 +253,27 @@ async function showReceiptWarnings(){
   if(state.page!=='results'||!lastDraft||warnedDraft===lastDraft.id||targetError||draftBlocked||draftStorageFailed||draftNotice||sheetOpen())return;
   const notes=[...(lastDraft.notices??[]),...state.rows.flatMap(row=>(row.flags??[]).filter(flag=>flag.type==='calc_mismatch').map(flag=>row.itemName+': '+flag.msg))];
   warnedDraft=lastDraft.id;
-  const issues=reviewAdmission(reviewData()).issues.filter(issue=>issue.rowId||issue.kind);
-  if(issues.length){
-    notes.push('ยอดที่แสดงใช้ 0 แทนราคาที่อ่านไม่ได้ เช็กช่องที่มีเครื่องหมาย ? ก่อนเพิ่มลงบิล');
-    notes.push(...new Set(issues.map(issue=>issue.message)));
-  }
   if(!notes.length)return;
   await openSheet({title:'หมายเหตุ',className:'receipt-warnings',
     actions:[{label:'ตกลง',className:'sheet-primary',value:true}],
     fallback:receiptActionFallback,
     mount:host=>{for(const note of notes){const p=document.createElement('p');p.textContent=note;host.body.append(p);}}
   });
+}
+
+async function confirmUnresolved(issues){
+  const choice=await openSheet({title:'ยังมีรายการที่ต้องตรวจสอบ',className:'receipt-unresolved',
+    body:'<p>แนะนำให้แก้ช่องที่ยังไม่ได้ยืนยันก่อนเพิ่มลงบิล</p><p>หากทำต่อ จะใช้จำนวนและราคาที่มีอยู่ ช่องที่ไม่มีจำนวนจะใช้ 1 ช่องที่ไม่มีราคาและค่าปรับยอดที่ยังไม่ได้ยืนยันจะใช้ 0</p>',
+    actions:[{label:'แก้ไข',className:'sheet-primary',value:'edit'},{label:'ทำต่อ',value:'continue'}],
+    fallback:receiptActionFallback});
+  if(choice==='edit'){
+    const first=issues[0];
+    const field=first.rowId
+      ?`[data-edit-cell="${CSS.escape(first.rowId)}:${first.editField}"],[data-edit-input="${CSS.escape(first.rowId)}:${first.editField}"]`
+      :`[data-summary-input="${first.kind}:${first.field}"]`;
+    document.querySelector(field)?.focus();
+  }
+  return choice==='continue';
 }
 
 function render(){
@@ -286,6 +296,7 @@ const importController=createReceiptImportController({
   getStatus:()=>({composing:editors.composing,targetError,draftBlocked}),
   setBaseRevision:value=>{baseRevision=value;},
   setOptions:options=>reviewModel.setImportOptions(options),persistDraft,
+  confirmUnresolved,
   confirmRepeat:()=>openSheet({title:'เพิ่มใบเสร็จเดิมอีกครั้งหรือไม่?',body:'<p>เคยเพิ่มใบเสร็จนี้ลงบิลไปแล้ว หากเพิ่มต่อจะซ้ำเมนูเดิม</p>',
     actions:[{label:'ยกเลิก',value:false},{label:'เพิ่มอีกครั้ง',className:'sheet-primary',value:true}],fallback:receiptActionFallback}),
   chooseImport:openReceiptImport,
@@ -296,7 +307,7 @@ const importController=createReceiptImportController({
   },returnToBill
 });
 async function submitReceipt(){
-  if(importController.busy||editors.composing)return;
+  if(importController.busy||editors.composing||document.getElementById('submitBtn')?.disabled)return;
   document.activeElement?.blur();
   const pending=importController.submit();
   // The dialog owns progress and its own actions. Its background also rejects
@@ -351,7 +362,9 @@ async function checkTarget(){
   }
   if(!repository){try{repository=await openBillRepository();if(billId)billSession=createBillSession({repository,billId,sessionStorage:tabStorage});}catch(error){targetError=error.message;showStorageNotice();return;}}
   if(!billSession)return;
-  try{const latest=await repository.read(billId);if(!latest){targetMissing=true;targetError='ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์';showImportError(targetError);showStorageNotice();}else{targetMissing=false;targetError='';showStorageNotice();if(latest.recordRevision!==baseRevision)showImportError('บิลนี้มีการเปลี่ยนแปลง เช็กบิลล่าสุดก่อนเพิ่มเมนู');}}
+  // Confirming an import checks the revision before writing. Passive target
+  // checks only report availability, including when returning to a new receipt.
+  try{const latest=await repository.read(billId);targetMissing=!latest;targetError=latest?'':'ไม่พบข้อมูลบิลนี้ในเบราว์เซอร์';if(targetMissing)showImportError(targetError);showStorageNotice();}
   catch(error){targetError=error.message;showImportError(targetError);showStorageNotice();}
 }
 onReceipt('pageshow',checkTarget);

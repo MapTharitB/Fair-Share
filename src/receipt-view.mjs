@@ -5,7 +5,7 @@ import {mountHistoryControls} from './history-controls.mjs';
 import {mountReceiptLayout,updateReceiptLayout,RECEIPT_PLACEHOLDER} from './receipt-layout.mjs';
 import {receiptIssueMessage} from './receipt-fields.mjs';
 import {getDerivedValues,getReceiptDiscrepancy} from './receipt-parser.mjs';
-import {receiptSummary as resolveSummaryState,reviewSubtotal,reviewAdmission} from './receipt-draft.mjs';
+import {receiptSummary as resolveSummaryState,reviewSubtotal,receiptPreviewSummary} from './receipt-draft.mjs';
 
 export function updateReceiptTextControls(raw){
   const clear=document.getElementById('clearTaBtn'),parse=document.getElementById('parseBtn');
@@ -115,7 +115,7 @@ export function renderInput(model,actions) {
         <div class="vision-zone" id="visionZone"></div>
         <div class="ta-card">
           <div class="ta-bar">
-            <span class="ta-lbl">ข้อความที่อ่าน/คัดลอกจากภาพใบเสร็จ</span>
+            <label class="ta-lbl" for="receiptText">ข้อความที่อ่าน/คัดลอกจากภาพใบเสร็จ</label>
             <button class="clear-ta-btn" id="clearTaBtn" ${!state.raw?"disabled":""}>ลบทั้งหมด</button>
           </div>
           <textarea class="receipt-ta" id="receiptText" placeholder="${RECEIPT_PLACEHOLDER}">${escapeHtml(state.raw||"")}</textarea>
@@ -162,7 +162,6 @@ export function renderReview(model,actions) {
   let summaryFocusTarget=null;
 
   const subtotal = reviewSubtotal(state);
-  const admission=reviewAdmission(state);
   const summaryView = resolveSummaryState(subtotal,state.summarySource,state.summaryEdits,state.discountCanonical);
   const foodUnknown=state.rows.some(r=>!r.isDiscount&&(r.qty===null||r.priceValue===null||Object.keys(r.issues??{}).length));
   const pending=Object.keys(state.summaryIssues??{});
@@ -175,13 +174,7 @@ export function renderReview(model,actions) {
     if(issue||foodUnknown&&active&&!fixed||kind==='vat'&&pending.includes('service_charge')||kind==='discount'&&pending.some(k=>k!=='discount'))v.amount=null;
     if(issue||foodUnknown&&active&&fixed)v.rate=null;
   }
-  const previewEdits={...state.summaryEdits},previewSources={...state.summarySource};
-  for(const kind of pending){
-    previewSources[kind]=null;
-    previewEdits[kind+'_rate']=0;
-    if(kind==='discount')previewEdits.discount_amount=0;
-  }
-  const previewTotal=resolveSummaryState(subtotal,previewSources,previewEdits,state.discountCanonical).total;
+  const previewTotal=receiptPreviewSummary(state,subtotal).total;
   const showSC   = summaryView.service_charge.amount>0||summaryView.service_charge.rate>0;
   const showVAT  = summaryView.vat.amount>0||summaryView.vat.rate>0;
   const showDisc = summaryView.discount.amount>0;
@@ -231,7 +224,7 @@ export function renderReview(model,actions) {
       </table></div></div>
       <div class="results-bottom-spacer" aria-hidden="true"></div>
     </div></div>
-    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${admission.ok?'':'disabled'}>เพิ่มเมนูลงบิล</button></div></div>`;
+    <div class="submit-wrap"><div class="submit-wrap-inner"><button class="submit-btn" id="submitBtn" ${firstItemRow?'':'disabled'}>เพิ่มเมนูลงบิล</button></div></div>`;
 
   const error=document.createElement('p');error.id='receipt-import-error';error.className='import-error';error.setAttribute('role','alert');error.hidden=true;
   document.querySelector('.results-bottom-spacer').before(error);
