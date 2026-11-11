@@ -163,9 +163,9 @@ function parseDraft(raw,{id=newId}={}){
   const notices=[];
   const parsed=parseReceipt(raw,{recoverOmitted:true,onSummaryEntries(entries){
     const vat=entries.filter(e=>e.kind==='vat'&&/^(?:vat|value added tax|ภาษี(?:มูลค่าเพิ่ม)?)\s*(?:inclusive|included|incl\.|รวมในราคา|รวมอยู่ในราคา)/i.test(e.norm));
-    if(vat.length)notices.push(`ใบเสร็จระบุ “${vat.map(e=>e.raw).join(' / ')}” หากราคาอาหารรวมภาษีแล้ว ให้ตั้ง VAT เป็น 0 เพื่อไม่ให้คิดซ้ำ`);
+    if(vat.length)notices.push(`ใบเสร็จระบุว่า “${vat.map(e=>e.raw).join(' / ')}” หากราคาอาหารรวม VAT แล้ว ให้ตั้งค่า VAT เป็น 0 เพื่อไม่ให้คิดภาษีซ้ำ`);
     const discounts=entries.filter(e=>e.kind==='discount');
-    if(discounts.filter(e=>e.hasPct).length>1)notices.push(`พบส่วนลดหลายเปอร์เซ็นต์ “${discounts.map(e=>e.raw).join(' / ')}” ใช้เปอร์เซ็นต์แรกไว้ก่อน ตรวจสอบและแก้ยอดส่วนลดให้ตรงกับใบเสร็จ`);
+    if(discounts.filter(e=>e.hasPct).length>1)notices.push(`ใบเสร็จมีส่วนลดหลายเปอร์เซ็นต์ “${discounts.map(e=>e.raw).join(' / ')}” ระบบใช้เปอร์เซ็นต์แรกในการคำนวณ โปรดตรวจสอบและแก้ไขยอดส่วนลดให้ตรงกับใบเสร็จ`);
   }});
   const groupId=id(),group={id:groupId,name:'ใบเสร็จ',...adjustment()};
   const source=parsed.summarySource;
@@ -177,7 +177,7 @@ function parseDraft(raw,{id=newId}={}){
   if(totalLines.length){const match=totalLines.at(-1).match(/([\d,]+(?:\.\d{1,2})?)\s*(?:บาท|฿)?\s*$/);group.printedTotalCents=cents(match[1]);}
   const rows=parsed.rows.filter(r=>!r.isDiscount).map(r=>({...r,id:id()}));
   const draft={id:id(),raw,group,items:[],notices};
-  if(source.discount?.extraAmountSum)notices.push('พบส่วนลดหลายรูปแบบ กรุณาตรวจสอบยอดส่วนลดรวม');
+  if(source.discount?.extraAmountSum)notices.push('ใบเสร็จมีทั้งส่วนลดแบบเปอร์เซ็นต์และแบบจำนวนเงิน โปรดตรวจสอบว่ายอดส่วนลดรวมตรงกับใบเสร็จ');
   return {draft,rows,summarySource:source,summaryIssues:parsed.summaryIssues??{}};
 }
 
