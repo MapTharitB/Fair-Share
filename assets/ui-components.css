@@ -3,9 +3,10 @@ body{isolation:isolate;background-color:var(--color-background)}
 /* Size the page canvas to the viewport even when Safari lays out a taller bill. */
 body::before{content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;background:var(--surface-canvas)}
 #top-tabs,#sticky-done-wrap,#summary-export-bar,#add-menu-slot,
-.parse-wrap,.submit-wrap,.per-person-sticky,#item-warn-sticky,.sub-bar,.summary-sticky-bar{
+.parse-wrap,.submit-wrap,#item-warn-sticky,.sub-bar,.summary-sticky-bar{
   background:var(--color-background) var(--surface-canvas) center / auto no-repeat fixed;
 }
+.per-person-sticky{background:var(--color-background) var(--surface-canvas)}
 #top-tabs,#sticky-done-wrap,#summary-export-bar,.parse-wrap,.submit-wrap,
 .per-person-sticky,#item-warn-sticky,.sub-bar,.summary-sticky-bar{border-color:transparent}
 

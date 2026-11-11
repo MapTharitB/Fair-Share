@@ -401,8 +401,8 @@ const billViewActions={
     try{return await openPersonMenus({session:activeSession(),personId,onSaved:async()=>renderSummary(),onRefreshed:adoptRefreshed,onEditItem:id=>openItemSess(id),onGoToMenu:()=>goto('menu')});}
     finally{billController.releaseSheetCandidate('person-menus',billId);}
   },
-  toggleCollapsed(id){if(collapsedPeople.has(id))collapsedPeople.delete(id);else collapsedPeople.add(id);saveUiState();renderSummary();},
-  expandAll(){collapsedPeople.clear();saveUiState();renderSummary();},collapseAll(){workingBill().people.forEach(person=>collapsedPeople.add(person.id));saveUiState();renderSummary();},
+  toggleCollapsed(id){if(collapsedPeople.has(id))collapsedPeople.delete(id);else collapsedPeople.add(id);saveUiState();renderSummary({keepControls:true});},
+  expandAll(){collapsedPeople.clear();saveUiState();renderSummary({keepControls:true});},collapseAll(){workingBill().people.forEach(person=>collapsedPeople.add(person.id));saveUiState();renderSummary({keepControls:true});},
   async removePersonMenu(personId,itemId){
     if(billState().saving||billState().pendingCandidate)return;
     const captured=billState().record,person=captured.bill.people.find(person=>person.id===personId),item=captured.bill.items.find(item=>item.id===itemId);if(!person||!item)return;

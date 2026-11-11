@@ -122,9 +122,9 @@ function renderSummaryContent(keepControls=false){
   h+=`<div class="dist-bar${svcDistDisabled?' disabled-bar':''}"><span class="dist-bar-label">Service Charge</span><div class="dist-bar-ctrl">${distributionOptions('sd',model.working.serviceDist,svcDistDisabled)}</div></div>`;
   h+=`<div class="dist-bar${discDistDisabled?' disabled-bar':''}"><span class="dist-bar-label">ส่วนลด</span><div class="dist-bar-ctrl">${distributionOptions('dd',model.working.discountDist,discDistDisabled)}</div></div>`;
   h+=`</div>`;
+  const nPeople=model.working.people.length;
+  h+=`<div class="per-person-sticky"><h2 class="stitle">ยอดรวมรายคน</h2>${nPeople?`<div class="coll-btns"><button class="coll-btn" id="btn-expand-all">ขยายทั้งหมด</button><button class="coll-btn" id="btn-collapse-all">ย่อทั้งหมด</button></div>`:''}</div>`;
   const controls=h;h='';
-  const nPeople=model.working.people.length,allExpanded=collapsed.size===0,allCollapsed=nPeople>0&&collapsed.size>=nPeople;
-  h+=`<div class="per-person-sticky"><h2 class="stitle">ยอดรวมรายคน</h2>${nPeople?`<div class="coll-btns"><button class="coll-btn${allExpanded?' act':''}" id="btn-expand-all">ขยายทั้งหมด</button><button class="coll-btn${allCollapsed?' act':''}" id="btn-collapse-all">ย่อทั้งหมด</button></div>`:''}</div>`;
   if(!model.working.people.length){const totals=model.totals;h+=emptyPeopleCard('summary-add-people')+renderBillTotals(totals);if(totals.unallocated)h+=`<p class="wb wb-w">ยังแบ่งจ่ายไม่ครบ ${fmt(totals.unallocated)}</p>`;setSummaryContent(el,controls,h,keepControls);actions.bindPeopleEntry(el.querySelector('#summary-add-people'));return;}
   const bt=model.totals;
   if(!bt){h+=`<div class="empty"><div class="empty-ico">💰</div><div class="empty-txt">ยังไม่มีข้อมูล</div></div>`;setSummaryContent(el,controls,h,keepControls);return;}
@@ -175,8 +175,13 @@ function renderSummaryContent(keepControls=false){
   setSummaryContent(el,controls,h,keepControls);
   el.querySelectorAll('[data-a="person-menus"]').forEach(node=>actions.bindBillAction(node,()=>actions.personMenus(node.dataset.pid)));
   el.querySelectorAll('[data-a="toggle-coll"]').forEach(node=>node.addEventListener('click',()=>actions.toggleCollapsed(node.dataset.pid)));
-  el.querySelector('#btn-expand-all').addEventListener('click',actions.expandAll);
-  el.querySelector('#btn-collapse-all').addEventListener('click',actions.collapseAll);
+  const expand=el.querySelector('#btn-expand-all'),collapse=el.querySelector('#btn-collapse-all');
+  expand.classList.toggle('act',collapsed.size===0);
+  collapse.classList.toggle('act',collapsed.size>=nPeople);
+  if(!keepControls){
+    expand.addEventListener('click',actions.expandAll);
+    collapse.addEventListener('click',actions.collapseAll);
+  }
   el.querySelectorAll('[data-a="go-item"]').forEach(node=>node.addEventListener('click',()=>actions.openItem(node.dataset.id)));
   el.querySelectorAll('[data-a="go-edit-item"]').forEach(node=>node.addEventListener('click',event=>{if(!event.target.closest('[data-a="rm-p-from-item"]'))actions.openItem(node.dataset.iid);}));
   el.querySelectorAll('[data-a="rm-p-from-item"]').forEach(node=>node.addEventListener('click',event=>{event.stopPropagation();actions.removePersonMenu(node.dataset.pid,node.dataset.iid);}));
@@ -195,8 +200,10 @@ function attachDistHandlers(el){
     model=next;collapsed=new Set(model.collapsed);
     if(model.totalsOnly){const panel=document.getElementById('menu-bill-totals');if(panel)panel.innerHTML=renderBillTotals(model.totals);return;}
     if(kind==='menu'){renderMenuContent();return;}
-    stickyCleanup();bottomCleanup();renderSummaryContent(!!model.keepControls);
-    stickyCleanup=observeStickyHeading(document.querySelector('.per-person-sticky'));
+    const keepControls=!!model.keepControls && !!document.querySelector('#screen-summary #summary-details');
+    if(!keepControls)stickyCleanup();
+    bottomCleanup();renderSummaryContent(keepControls);
+    if(!keepControls)stickyCleanup=observeStickyHeading(document.querySelector('.per-person-sticky'));
     const bar=document.getElementById('summary-export-bar');document.getElementById('app-footer').style.display=bar?'none':'';
     bottomCleanup=reserveBottomAction(bar);
   }
