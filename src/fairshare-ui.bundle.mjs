@@ -3336,50 +3336,6 @@ function validateApprovedBackup(raw) {
   return decodeBillFile(raw).bill;
 }
 
-// src/ui-theme.mjs
-var colorRoles = {
-  background: "--color-background",
-  surface: "--color-surface",
-  card: "--color-card",
-  emphasis: "--color-orange-on-light",
-  text: "--color-text",
-  muted: "--color-text-muted",
-  subdued: "--color-text-subdued",
-  border: "--color-border",
-  success: "--color-success",
-  danger: "--color-danger",
-  accentWash: "--color-accent-export-wash",
-  sectionLabel: "--section-label-color"
-};
-function readUiTheme(root = document.documentElement) {
-  const document2 = root.ownerDocument;
-  const window2 = document2.defaultView;
-  const style = window2.getComputedStyle(root);
-  function required(token) {
-    const value = style.getPropertyValue(token).trim();
-    if (!value) throw Error("ไม่พบค่าธีม " + token);
-    return value;
-  }
-  const colors = {};
-  const fonts = Object.fromEntries(["body", "mono", "heading", "brand"].map(
-    (role) => [role, required("--font-" + role)]
-  ));
-  const probe = document2.createElement("span");
-  probe.hidden = true;
-  root.append(probe);
-  try {
-    for (const [role, token] of Object.entries(colorRoles)) {
-      const value = required(token);
-      if (!window2.CSS.supports("color", value)) throw Error("ค่าสีธีมไม่ถูกต้อง " + token);
-      probe.style.color = value;
-      colors[role] = window2.getComputedStyle(probe).color;
-    }
-  } finally {
-    probe.remove();
-  }
-  return { colors, fonts };
-}
-
 // src/summary-image.mjs
 async function inlineStyles(url) {
   const response = await fetch(url);
@@ -3416,48 +3372,46 @@ async function downloadSummaryImage(capture, toast2, model) {
     return;
   }
   const snapshot2 = structuredClone(model), name = capture.name;
-  const { colors, fonts } = readUiTheme();
   const root = document.createElement("div");
   root.className = "summary-image-root";
   root.inert = true;
   const style = getComputedStyle(document.documentElement);
   for (const key of style) if (key.startsWith("--")) root.style.setProperty(key, style.getPropertyValue(key));
-  Object.assign(root.style, {
-    width: "800px",
-    padding: "24px",
-    boxSizing: "border-box",
-    font: "400 14px " + fonts.body,
-    color: colors.text,
-    background: "var(--surface-canvas)",
-    position: "absolute",
-    left: "-10000px",
-    top: "0"
-  });
-  const brand = document.createElement("div");
-  brand.textContent = "หารจ่าย แฟร์ๆ";
-  brand.style.font = "700 24px " + fonts.brand;
-  const title = document.createElement("h2");
+  const header = document.createElement("header");
+  header.className = "app-header";
+  const brand = document.getElementById("hdr-title").cloneNode(true);
+  brand.removeAttribute("id");
+  brand.removeAttribute("tabindex");
+  brand.className = "app-brand";
+  header.append(brand);
+  const nameRow = document.createElement("div");
+  nameRow.className = "summary-image-name";
+  const nameControl = document.createElement("div");
+  nameControl.className = "bill-name-control";
+  const title = document.createElement("div");
+  title.className = "bill-name-text";
   title.textContent = name;
-  title.style.overflowWrap = "anywhere";
-  root.append(brand, title);
+  nameControl.append(title);
+  nameRow.append(nameControl);
+  root.append(header, nameRow);
   const content2 = document.createElement("div");
+  content2.className = "summary-image-content";
   root.append(content2);
   document.body.append(root);
   try {
-    await document.fonts.ready;
     renderSummaryImageContent(snapshot2, content2);
     content2.querySelectorAll(".dist-bar-row,.section-start,.coll-btns,.person-card-actions,.coll-chev,.btn-icon,#summary-export-bar").forEach((node) => node.remove());
     for (const node of content2.querySelectorAll(".per-person-sticky")) Object.assign(node.style, { position: "static", background: "transparent" });
     const heading = content2.querySelector(".per-person-sticky");
     if (heading) heading.style.marginTop = "0";
     const footer = document.createElement("p");
+    footer.className = "summary-image-footer";
     footer.textContent = "UX Design by Map Tharit Banchanurat";
-    footer.style.textAlign = "center";
-    footer.style.color = colors.subdued;
     root.append(footer);
     const date = document.createElement("div");
     date.textContent = (/* @__PURE__ */ new Date()).toLocaleString("th-TH");
     footer.prepend(date);
+    await document.fonts.ready;
     const height = Math.ceil(root.getBoundingClientRect().height);
     const sheets = [...document.querySelectorAll("link[rel=stylesheet]")];
     const css = (await Promise.all(sheets.map((link) => inlineStyles(link.href)))).join("\n");

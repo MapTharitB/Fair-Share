@@ -1,6 +1,5 @@
 import {renderSummaryImageContent} from './main-bill-view.mjs';
 import {billFilename} from './backup-file.mjs';
-import {readUiTheme} from './ui-theme.mjs';
 
 async function inlineStyles(url){
   const response=await fetch(url);
@@ -32,33 +31,32 @@ async function inlineStyles(url){
 export async function downloadSummaryImage(capture,toast,model){
   if(!model?.working.people.length){toast('ยังไม่มีข้อมูลสรุป');return;}
   const snapshot=structuredClone(model),name=capture.name;
-  const {colors,fonts}=readUiTheme();
   const root=document.createElement('div');
   root.className='summary-image-root';
   root.inert=true;
   const style=getComputedStyle(document.documentElement);
   for(const key of style)if(key.startsWith('--'))root.style.setProperty(key,style.getPropertyValue(key));
-  Object.assign(root.style,{width:'800px',padding:'24px',boxSizing:'border-box',
-    font:'400 14px '+fonts.body,color:colors.text,
-    background:'var(--surface-canvas)',position:'absolute',left:'-10000px',top:'0'});
-  const brand=document.createElement('div');brand.textContent='หารจ่าย แฟร์ๆ';
-  brand.style.font='700 24px '+fonts.brand;
-  const title=document.createElement('h2');title.textContent=name;
-  title.style.overflowWrap='anywhere';
-  root.append(brand,title);
-  const content=document.createElement('div');root.append(content);
+  const header=document.createElement('header');header.className='app-header';
+  const brand=document.getElementById('hdr-title').cloneNode(true);
+  brand.removeAttribute('id');brand.removeAttribute('tabindex');brand.className='app-brand';
+  header.append(brand);
+  const nameRow=document.createElement('div');nameRow.className='summary-image-name';
+  const nameControl=document.createElement('div');nameControl.className='bill-name-control';
+  const title=document.createElement('div');title.className='bill-name-text';title.textContent=name;
+  nameControl.append(title);nameRow.append(nameControl);root.append(header,nameRow);
+  const content=document.createElement('div');content.className='summary-image-content';root.append(content);
   document.body.append(root);
   try{
-    await document.fonts.ready;
     renderSummaryImageContent(snapshot,content);
     content.querySelectorAll('.dist-bar-row,.section-start,.coll-btns,.person-card-actions,.coll-chev,.btn-icon,#summary-export-bar').forEach(node=>node.remove());
     for(const node of content.querySelectorAll('.per-person-sticky'))Object.assign(node.style,{position:'static',background:'transparent'});
     const heading=content.querySelector('.per-person-sticky');
     if(heading)heading.style.marginTop='0';
-    const footer=document.createElement('p');
+    const footer=document.createElement('p');footer.className='summary-image-footer';
     footer.textContent='UX Design by Map Tharit Banchanurat';
-    footer.style.textAlign='center';footer.style.color=colors.subdued;root.append(footer);
+    root.append(footer);
     const date=document.createElement('div');date.textContent=new Date().toLocaleString('th-TH');footer.prepend(date);
+    await document.fonts.ready;
     const height=Math.ceil(root.getBoundingClientRect().height);
     const sheets=[...document.querySelectorAll('link[rel=stylesheet]')];
     const css=(await Promise.all(sheets.map(link=>inlineStyles(link.href)))).join('\n');

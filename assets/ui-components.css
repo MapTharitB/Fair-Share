@@ -10,15 +10,15 @@ body::before{content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;ba
 #top-tabs,#sticky-done-wrap,#summary-export-bar,.parse-wrap,.submit-wrap,
 .per-person-sticky,#item-warn-sticky,.sub-bar,.summary-sticky-bar{border-color:transparent}
 
-#hdr,.top-bar{
+:is(#hdr,.app-header),.top-bar{
   background:var(--surface-navy);
   color:var(--color-white);
   border-color:var(--color-header-rim);
   box-shadow:var(--shadow-header);
   --focus-ink:var(--color-glass-rim);
 }
-#hdr :is(.title-pre,.btn-back,#hdr-title.subpage-title),.top-bar :is(.top-title,.back-btn){color:var(--color-white)}
-#hdr .title-main{color:var(--color-orange-fill-end)}
+:is(#hdr,.app-header) :is(.title-pre,.btn-back,#hdr-title.subpage-title),.top-bar :is(.top-title,.back-btn){color:var(--color-white)}
+:is(#hdr,.app-header) .title-main{color:var(--color-orange-fill-end)}
 #hdr .btn-back:where(.pointer-hover):hover,.top-bar .back-btn:where(.pointer-hover):hover{background:var(--surface-raised-navy)}
 
 .card,.scard,.sum-card,.ssb-card,.tbl-card,.ta-card,.vision-upload-area,
@@ -33,7 +33,7 @@ body::before{content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;ba
 .scard{background:var(--surface-glass-centered-base)}
 #toast{background:var(--surface-glass)}
 
-#bill-name-control,#bill-actions{
+:is(#bill-name-control,.bill-name-control),#bill-actions{
   background:var(--surface-glass-centered);
   border:var(--border-thin) solid var(--color-glass-rim);
   box-shadow:var(--shadow-control);
