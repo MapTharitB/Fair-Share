@@ -57,7 +57,7 @@
   --section-label-color: var(--color-text);
   /* Azure Glass surfaces and contextual ink. Only the canvas uses the final averaging correction. */
   --surface-canvas: linear-gradient(115deg,#51CFF8 0%,#89E4FD 43%,#59D1F8 78%,#8AE2FD 100%);
-  --glass-reflection-width: 475px;
+  --glass-reflection-width: 237.5px;
   --glass-reflection-period: calc(1.5 * var(--glass-reflection-width));
   --glass-reflection-image: repeating-linear-gradient(120deg,
     #FFFFFF10 calc(50% - var(--glass-reflection-period) / 2),
@@ -174,5 +174,5 @@
 }
 
 @media(max-width:420px){
-  :root{--glass-reflection-width:250px}
+  :root{--glass-reflection-width:125px}
 }
