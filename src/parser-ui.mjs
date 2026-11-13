@@ -10,6 +10,7 @@ import {openReceiptImport} from './receipt-import-dialog.mjs';
 import {createRecoveryNotice,openSheet,sheetOpen} from './in-app-confirm.mjs';
 import {createReceiptReview,normalizeReviewDraft} from './receipt-draft.mjs';
 import {createOcrReader,browserWorker,prepareImage} from './ocr-reader.mjs';
+import {createAiReceiptReader} from './ai-receipt-reader.mjs';
 import {openBillRepository} from './bill-repository.mjs';
 import {newId} from './bill-state.mjs';
 import {trackPointerHover} from './pointer-hover.mjs';
@@ -62,11 +63,16 @@ function ocrSetProgress(label, pct, note) {
     else noteEl.style.display = 'none';
   }
 }
-const visionState = {statusMsg:'',statusKind:''};
-const localReader=createOcrReader(browserWorker);
+const prototype=document.querySelector('meta[name="fairshare-ai-prototype"]');
+const sampleMode=prototype?.dataset.sample==='true';
+const visionState = {statusMsg:'',statusKind:'',prototypeLabel:prototype?(sampleMode?'ตัวอย่างหน้าจอ · ไม่ได้อ่านรูปจริง':'ทดลอง AI vision'):null,notice:prototype
+  ?sampleMode?'ตัวอย่างหน้าจอ ใช้ข้อความที่เตรียมไว้ ไม่ได้อ่านรูปด้วย AI จริง'
+    :'ส่งรูปไปยัง Google AI เพื่ออ่านข้อความ ลบข้อมูลส่วนตัวก่อนเลือก เช็กเมนูและราคาก่อนเพิ่มลงบิล'
+  :undefined};
+const receiptReader=prototype?createAiReceiptReader({endpoint:'/api/receipt-vision',token:prototype.content}):createOcrReader(browserWorker);
 const overlay=document.getElementById('ocr-prog-ov');
 let ocrPresentation=null;
-const ocrController=createReceiptOcrController({reader:localReader,prepareImage,getRaw:()=>state.raw,parseText:parseCurrentText,
+const ocrController=createReceiptOcrController({reader:receiptReader,prepareImage,getRaw:()=>state.raw,getEditGeneration:()=>textGeneration,parseText:parseCurrentText,
   present:{
     open(token){
       ocrPresentation={token,previous:document.activeElement,succeeded:false,timer:null,resume:null};
@@ -85,9 +91,9 @@ const ocrController=createReceiptOcrController({reader:localReader,prepareImage,
         await new Promise(resolve=>{presentation.resume=resolve;presentation.timer=setTimeout(resolve,120);});
       }
     },
-    error(token){
+    error(token,error){
       if(ocrPresentation?.token!==token)return;
-      visionState.statusMsg='อ่านรูปนี้ไม่ได้ ลองใช้รูปที่ชัดขึ้น หรือคัดลอกข้อความจากรูปมาวางแทน';
+      visionState.statusMsg=prototype?error.message:'อ่านรูปนี้ไม่ได้ ลองใช้รูปที่ชัดขึ้น หรือคัดลอกข้อความจากรูปมาวางแทน';
       visionState.statusKind='error';renderVisionZone();
       ocrPresentation.succeeded=false;ocrPresentation.previous=document.getElementById('visionDropArea');
     },
@@ -131,7 +137,7 @@ async function parseCurrentText(raw=state.raw,isCurrent=()=>true){
   const resume=!draftBlocked&&lastDraft&&raw===lastDraft.raw;
   // Submission is a text-history boundary even when a later edit cancels it.
   if(raw===state.raw)pushTextHistory(raw);
-  try{result=resume?null:createReceiptReview(raw);loaded=billSession?await billSession.load({canAdopt:current}):null;}
+  try{result=resume?null:createReceiptReview(raw,{preserveItemLines:!!prototype});loaded=billSession?await billSession.load({canAdopt:current}):null;}
   catch(error){
     // OCR text remains correctable even if parsing or target access fails.
     if(!current())return;

@@ -157,11 +157,11 @@ export function copyReceiptForImport(draft){
   next.items=next.items.map(item=>({...item,id:newId(),groupId:next.group.id}));
   return next;
 }
-function parseDraft(raw,{id=newId}={}){
+function parseDraft(raw,{id=newId,preserveItemLines=false}={}){
   if(typeof raw!=='string'||raw.length>100000)throw Error('ข้อความใบเสร็จยาวเกินไป');
   const normalized=raw.replace(/[๐-๙]/g,c=>String(c.charCodeAt(0)-0x0e50)).replace(/\u0e4d\u0e32/g,'ำ');
   const notices=[];
-  const parsed=parseReceipt(raw,{recoverOmitted:true,onSummaryEntries(entries){
+  const parsed=parseReceipt(raw,{recoverOmitted:true,preserveItemLines,onSummaryEntries(entries){
     const vat=entries.filter(e=>e.kind==='vat'&&/^(?:vat|value added tax|ภาษี(?:มูลค่าเพิ่ม)?)\s*(?:inclusive|included|incl\.|รวมในราคา|รวมอยู่ในราคา)/i.test(e.norm));
     if(vat.length)notices.push(`ใบเสร็จระบุว่า “${vat.map(e=>e.raw).join(' / ')}” หากราคาอาหารรวม VAT แล้ว ให้ตั้งค่า VAT เป็น 0 เพื่อไม่ให้คิดภาษีซ้ำ`);
     const discounts=entries.filter(e=>e.kind==='discount');
@@ -195,4 +195,4 @@ function completeReview(parsed){
   return {...parsed,raw:parsed.draft.raw,page:'results',colOrder:['unit_price','line_total'],importMode:'append',importAssignments:'all',
     summaryEdits:initializeSummaryEdits(null,parsed.summarySource),discountCanonical:parsed.summarySource?.discount?.mode==='amount'?'amount':'rate'};
 }
-export function createReceiptReview(raw){return completeReview(parseDraft(raw));}
+export function createReceiptReview(raw,options){return completeReview(parseDraft(raw,options));}

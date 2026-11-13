@@ -15,7 +15,7 @@ export function formatPctForDisplay(rate) {
 function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel='',issue=null) {
   const fields = [['rate',rate,'%'],['amount',amount,'฿']].map(([field,value,unit])=>
     `<div class="sum-field ${field===canonical?'canonical':'derived'}">
-      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" aria-invalid="${issue?.editField===field?'true':'false'}" placeholder="0" value="${escapeHtml(issue?.editField===field?issue.input??'':value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
+      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" aria-invalid="${issue?.editField===field?'true':'false'}" placeholder="${value===''?'ยังไม่ทราบ':'0'}"  value="${escapeHtml(issue?.editField===field?issue.input??'':value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
       <span class="sum-field-lbl" aria-hidden="true">${unit}</span>
     </div>`).join('');
   const responsiveLabel = shortLabel ? ` data-full-label="${label}" data-short-label="${shortLabel}"` : '';

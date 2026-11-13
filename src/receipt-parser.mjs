@@ -46,7 +46,12 @@ function isSummaryOrMetaLine(line){
 }
 function quickClassify(line){const s=nfc(String(line||"")).trim();if(!s)return"empty";if(isSummaryOrMetaLine(s))return"meta";return"item";}
 function normalizeText(raw){return receiptDigits(raw??"").replace(/\u0e4d\u0e32/g,"ำ").normalize("NFC").replace(/\u00A0|\u3000|\uFEFF/g," ").replace(/\t+/g," ").replace(/\r/g,"").replace(/[，]/g,",").replace(/[．｡。]/g,".").split("\n").map(l=>l.replace(/\s+/g," ").trim()).filter(Boolean).join("\n");}
-function looksComplete(line){const ts=String(line||"").trim().split(/\s+/);return ts.length>0&&/^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(ts[ts.length-1]);}
+function looksComplete(line){
+  const tokens=String(line??'').trim().split(/\s+/);
+  if(/^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(tokens.at(-1)))return true;
+  // A complete row can end in its name when all three numeric columns precede it.
+  return tokens.length>=4&&tokens.slice(0,3).every(t=>receiptNumber(t)!==null)&&tokens.slice(3).some(t=>/\p{L}/u.test(t));
+}
 const lineText=line=>typeof line==='string'?line:line.text;
 function joinLines(lines){return typeof lines[0]==='string'?lines.join(' '):{text:lines.map(lineText).join(' '),sourceLines:lines.flatMap(l=>l.sourceLines)};}
 function collapseVerticalOCR(lines){
@@ -79,7 +84,7 @@ function mergeWrappedLines(lines){
 function cleanToken(raw){return stripPunct(raw).replace(/,/g,"");}
 function isNoiseToken(raw){const s=cleanToken(raw);if(!s)return true;if(DATE_RE.test(s))return true;if(TIME_RE.test(s))return true;if(PHONE_RE.test(s))return true;if(LONG_NUM_RE.test(s))return true;if(ALNUM_ID_RE.test(s))return true;if(SEPARATOR_RE.test(raw))return true;if(FIELD_LABEL_RE.test(s))return true;return false;}
 function isSwallowLabel(raw){const s=cleanToken(raw).toLowerCase();return/^(?:no\.?|เลขที่|table|โต๊ะ|phone|tel|telephone|mobile|มือถือ|โทร|เบอร์|qty|quantity|จำนวน|ราคา|price|unit|หน่วยละ|amount|จำนวนเงิน|subtotal|total|grand|net|ยอดรวม|ยอดชำระ|ยอดสุทธิ|รวมสุทธิ|รวม|สุทธิ|ยอด|ทั้งสิ้น|เงินสด|เงินทอน|ทอน|รับเงิน|ชำระเงิน|vat|ภาษี|order|invoice|bill|receipt|ref|id|code|date|time|วันที่|เวลา|สาขา|branch|staff|cashier|พนักงาน|แคชเชียร์|ลูกค้า|customer|cash|change|balance|tip|rounding)$/i.test(s);}
-function stripNoiseTokens(line){const tokens=nfc(String(line||"").trim()).split(/\s+/).filter(Boolean);const kept=[];let swallowNext=false;for(let i=0;i<tokens.length;i++){const raw=tokens[i];const clean=cleanToken(raw);if(!clean)continue;if(/^(?:qty|quantity|จำนวน)$/i.test(clean)&&/^\d{1,2}$/.test(tokens[i+1]??"")){swallowNext=false;continue;}if(/^(?:อาหาร|สินค้า)$/.test(clean)&&/\d/.test(tokens[i+1]??"")){kept.push(raw);continue;}if(isSwallowLabel(raw)){swallowNext=true;continue;}if(swallowNext){if(/^(?:-?\d+(?:[.,]\d{1,2})?|0(?:[\s-]*\d){7,}|(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{2,})$/.test(clean)){swallowNext=false;continue;}swallowNext=false;}if(isNoiseToken(raw))continue;kept.push(raw);}return kept.join(" ").replace(/\s+/g," ").trim();}
+function stripNoiseTokens(line){const tokens=nfc(String(line||"").trim()).split(/\s+/).filter(Boolean);const kept=[];let swallowNext=false;for(let i=0;i<tokens.length;i++){const raw=tokens[i];if(raw==='?'){kept.push(raw);continue;}const clean=cleanToken(raw);if(!clean)continue;if(/^(?:qty|quantity|จำนวน)$/i.test(clean)&&/^\d{1,2}$/.test(tokens[i+1]??"")){swallowNext=false;continue;}if(/^(?:อาหาร|สินค้า)$/.test(clean)&&/\d/.test(tokens[i+1]??"")){kept.push(raw);continue;}if(isSwallowLabel(raw)){swallowNext=true;continue;}if(swallowNext){if(/^(?:-?\d+(?:[.,]\d{1,2})?|0(?:[\s-]*\d){7,}|(?=[A-Za-z0-9-]*\d)[A-Za-z0-9-]{2,})$/.test(clean)){swallowNext=false;continue;}swallowNext=false;}if(isNoiseToken(raw))continue;kept.push(raw);}return kept.join(" ").replace(/\s+/g," ").trim();}
 function tokenizeLine(line){return nfc(String(line||"").trim()).split(/\s+/).filter(Boolean).map(raw=>{const clean=raw.replace(/,/g,"");if(/^-?\d+(?:\.\d{1,2})?$/.test(clean)){const value=parseFloat(clean);const isDecimal=raw.includes(".");const hasThousandsSep=/\d,\d{3}/.test(raw);return{type:"number",raw,value,isDecimal,hasThousandsSep,isInteger:Number.isInteger(value)&&!isDecimal,isNegative:value<0,isDefinitelyPrice:isDecimal||hasThousandsSep||Math.abs(value)>999,couldBeQty:!isDecimal&&!hasThousandsSep&&Number.isInteger(value)&&value>=1&&value<=99};}if(UNIT_WORDS.has(stripPunct(raw)))return{type:"unit",raw};return{type:"text",raw};});}
 function scoreAssignment(lt,qt,up,tokens,ctx){let s=0;if(lt.isDecimal)s+=20;if(lt.hasThousandsSep)s+=18;if(lt.value>999)s+=15;else if(lt.value>99)s+=10;else if(lt.value>20)s+=5;else if(lt.value<5)s-=6;if(lt.isInteger&&!lt.isDecimal&&!lt.hasThousandsSep){const hasTextToken=tokens.some(t=>t.type==="text"&&/\p{L}/u.test(t.raw));if(hasTextToken){if(lt.value>=20&&lt.value<=500)s+=6;else if(lt.value>=10&&lt.value<=1000)s+=3;}}if(lt.i===tokens.length-1)s+=8;else if(lt.i>=tokens.length-2)s+=3;if(ctx){if(lt.value>=ctx.p10*0.4&&lt.value<=ctx.p90*2.5)s+=8;else if(lt.value<ctx.p10*0.2||lt.value>ctx.p90*5)s-=5;}if(qt){if(qt.value<lt.value)s+=18;else if(qt.value>lt.value)s-=20;if(qt.value<=6)s+=10;else if(qt.value<=12)s+=5;else if(qt.value<=20)s+=2;const hasAdjUnit=tokens[qt.i+1]?.type==="unit"||tokens[qt.i-1]?.type==="unit";if(hasAdjUnit)s+=12;const prevTxt=tokens[qt.i-1]?.type==="text";const nextTxt=tokens[qt.i+1]?.type==="text";if(prevTxt&&nextTxt)s-=28;else if(prevTxt)s-=2;if(ctx){if(qt.value<=ctx.maxQty+3)s+=5;if(qt.value>ctx.maxQty*3+5)s-=8;}}if(up&&qt){const calc=r2(up.value*qt.value);const diff=Math.abs(calc-lt.value);if(diff<0.01)s+=55;else if(diff<=1.0)s+=45;else if(diff<=lt.value*0.03)s+=20;else s-=30;if(up.value<=lt.value)s+=5;else s-=8;if(up.isDecimal)s+=3;}return s;}
 function findBestAssignment(tokens,ctx){const nums=tokens.map((t,i)=>({...t,i})).filter(t=>t.type==="number"&&!t.isNegative);if(!nums.length)return null;if(nums.length===1){const n=nums[0];const sc=(n.isDefinitelyPrice?38:n.value>20?25:10)+(n.i===tokens.length-1?8:0);return{lt:n,qt:null,up:null,score:sc};}const candidates=[];for(const lt of nums){candidates.push({lt,qt:null,up:null,score:scoreAssignment(lt,null,null,tokens,ctx)});for(const qt of nums.filter(n=>n!==lt&&n.couldBeQty)){candidates.push({lt,qt,up:null,score:scoreAssignment(lt,qt,null,tokens,ctx)});for(const up of nums.filter(n=>n!==lt&&n!==qt)){candidates.push({lt,qt,up,score:scoreAssignment(lt,qt,up,tokens,ctx)});}}}candidates.sort((a,b)=>b.score-a.score);return candidates[0];}
@@ -111,13 +116,44 @@ function parseItemLine(line,ctx,origin){
     return r;};
   const price=t=>t&&receiptNumber(t.raw)!==null;
   const substantive=ts=>ts.some(t=>/\p{L}/u.test(t.raw));
+  const nums=tokens.filter(t=>t.type==='number');
+  const words=tokens.filter(t=>t.type!=='number');
+  let fields=origin?.alignedFields;
+  if(!fields&&!origin?.tableAmbiguous&&nums.length===3&&substantive(words)&&words.every(t=>t.raw!=='?')){
+    const matches=[];
+    for(const quantity of nums.filter(t=>t.couldBeQty)){
+      for(const unit of nums.filter(t=>t!==quantity)){
+        const total=nums.find(t=>t!==quantity&&t!==unit);
+        if(price(unit)&&price(total)&&Math.round(unit.value*100)*quantity.value===Math.round(total.value*100))
+          matches.push({quantity,unit,total});
+      }
+    }
+    const conventional=matches.find(m=>m.quantity===nums[0]&&m.unit===nums[1]&&m.total===nums[2]);
+    const chosen=conventional??(matches.length===1?matches[0]:null);
+    if(chosen)fields={...chosen,name:words.map(t=>t.raw).join(' ')};
+    else if(matches.length)return row({itemName:stripped,qty:null,issues:{qty:fieldIssue('ambiguous','qty'),price:fieldIssue('ambiguous','line_total')}});
+  }
+  if(fields){
+    const {quantity,unit,total,name}=fields;
+    identify('quantity',quantity);identify('unit',unit);identify('total',total);
+    const exact=Math.round(unit.value*100)*quantity.value===Math.round(total.value*100);
+    return row({itemName:name,qty:quantity.value,priceSource:exact?'unit_price':'line_total',
+      priceValue:exact?unit.value:total.value,confidence:0.97,pattern:'unit-qty-total'});
+  }
   const last=tokens.at(-1),prefix=tokens.slice(0,-1);
+  if(last?.raw==='?'){
+    const qty=prefix.at(-1)?.couldBeQty?prefix.at(-1):null;
+    if(qty)identify('quantity',qty);
+    const name=prefix.filter(t=>t!==qty&&t.raw!=='?').map(t=>t.raw).join(' ');
+    return row({itemName:name,qty:qty?.value??null,pattern:'unread-price',issues:{price:fieldIssue('missing','line_total'),...(!qty?{qty:fieldIssue('ambiguous','qty')}:{})}});
+  }
   if(!price(last)){
     const numeric=last&&/^[+-]?\d[\d,.]*$/.test(last.raw);if(numeric)identify('total',last);
     const qty=prefix.find(t=>t.couldBeQty);if(qty)identify('quantity',qty);
     return row({itemName:stripped,qty:qty?.value??1,confidence:0.15,pattern:'unread-price',issues:{price:fieldIssue(numeric?'invalid':'missing','line_total')}});
   }
   identify('total',last);
+  if(prefix.some(t=>t.raw==='?'))return row({itemName:prefix.filter(t=>t.raw!=='?').map(t=>t.raw).join(' '),qty:null,priceValue:last.value,issues:{qty:fieldIssue('ambiguous','qty')},pattern:'ambiguous-quantity'});
   const [qt,up,lt]=tokens.slice(-3),nameTokens=tokens.slice(0,-3);
   if(qt?.couldBeQty&&price(up)&&price(lt)&&substantive(nameTokens)){
     identify('quantity',qt);identify('unit',up);
@@ -193,10 +229,10 @@ function findMetadataAnchorIndices(mergedLines){return new Set(mergedLines.map((
 function isNearMetadataAnchor(idx,anchors,win=5){for(let d=-win;d<=win;d++)if(anchors.has(idx+d))return true;return false;}
 function isLikelyAddressLine(line,lineIdx,billStyle,anchorIndices){const s=nfc(line).trim();const fiveDigit=(s.match(/\b\d{5}\b/g)||[]).find(t=>/^\d{5}$/.test(t));if(!fiveDigit)return false;let score=0;if(billStyle.hasDecimal||billStyle.hasThousands)score+=4;if(hasAddressMorpheme(s))score+=3;if(isNearMetadataAnchor(lineIdx,anchorIndices))score+=2;if(!/\b\d{1,3}(?:,\d{3})+\b|\b\d+\.\d{2}\b/.test(s))score+=1;return score>=4;}
 function applyZoneFilter(rows){const isAnchor=row=>!row.isDiscount&&!isSummaryItemName(row.itemName)&&row.confidence>=0.55&&row.itemName.trim().length>=2;const anchorIdxs=rows.reduce((acc,row,i)=>{if(isAnchor(row))acc.push(i);return acc;},[]);if(anchorIdxs.length<2){return rows.filter(row=>row.isDiscount||(isSummaryItemName(row.itemName)?false:(!row.isDiscount&&/^[\d\s.,\-]+$/.test(row.itemName.trim())?false:row.itemName.trim().length>=2)));}const first=anchorIdxs[0];const last=anchorIdxs[anchorIdxs.length-1];return rows.filter((row,idx)=>{if(row.isDiscount)return true;if(isSummaryItemName(row.itemName))return false;if(!row.isDiscount&&/^[\d\s.,\-]+$/.test(row.itemName.trim()))return false;if(idx>=first&&idx<=last)return true;return row.confidence>=0.50;});}
-function preprocessReceipt(rawText){
+function preprocessReceipt(rawText,{preserveItemLines=false}={}){
   const literalLines=String(rawText??'').split(/\r\n|\r|\n/);
   const records=literalLines.map((line,i)=>({text:normalizeText(line),sourceLines:[i],table:line.includes('\t')})).filter(r=>r.text);
-  const rawLines=records.map(r=>r.text),merged=mergeWrappedLines(collapseVerticalOCR(records));
+  const rawLines=records.map(r=>r.text),merged=preserveItemLines?records:mergeWrappedLines(collapseVerticalOCR(records));
   const billStyle=detectBillNumericStyle(rawLines),anchors=findMetadataAnchorIndices(merged.map(lineText));
   let headers=null;
   const headerAliases=[/^(?:qty|quantity|จำนวน)$/i,/^(?:unit price|price|ราคา|หน่วยละ)$/i,/^(?:total|line total|amount|ยอดรวม|จำนวนเงิน)$/i];
@@ -209,12 +245,20 @@ function preprocessReceipt(rawText){
     const codeColumn=headers&&cells.length>1?headers.findIndex(c=>/^(?:code|item code|รหัส|no\.?)$/i.test(c)):-1;
     const clean=stripNoiseTokens(codeColumn>=0?cells.filter((_,i)=>i!==codeColumn).join(' '):orig);if(!clean)continue;
     const aligned=headers&&cells.length===headers.length&&headerAliases.every(re=>{const col=headers.findIndex(c=>re.test(c));return col>=0&&receiptNumber(cells[col],{quantity:re===headerAliases[0]})!==null;});
-    origins.push({...record,clean,rawLine:literal,itemCode:codeColumn>=0?cells[codeColumn]:null,labeledQty:!!aligned,tableAmbiguous:!!headers&&cells.length>1&&!aligned});
+    let alignedFields=null;
+    if(aligned){
+      const cols=headerAliases.map(re=>headers.findIndex(c=>re.test(c)));
+      const name=cells.filter((_,i)=>i!==codeColumn&&!cols.includes(i)).join(' ').trim();
+      const literalCells=literal.split('\t');
+      const [quantity,unit,total]=cols.map(i=>({literal:literalCells[i].trim(),value:receiptNumber(cells[i])}));
+      if(name)alignedFields={name,quantity,unit,total};
+    }
+    origins.push({...record,alignedFields,clean,rawLine:literal,itemCode:codeColumn>=0?cells[codeColumn]:null,labeledQty:!!aligned,tableAmbiguous:!!headers&&cells.length>1&&!aligned});
   }
   return {cleanLines:origins.map(r=>r.clean),rawLines,origins,literalLines};
 }
-function parseReceipt(rawText,{recoverOmitted=false,onSummaryEntries}={}){
-  const {origins,literalLines}=preprocessReceipt(rawText);
+function parseReceipt(rawText,{recoverOmitted=false,onSummaryEntries,preserveItemLines=false}={}){
+  const {origins,literalLines}=preprocessReceipt(rawText,{preserveItemLines});
   const summaryIssues={};
   const summarySource=extractSummarySources(literalLines,entries=>{
     onSummaryEntries?.(entries);
@@ -225,7 +269,7 @@ function parseReceipt(rawText,{recoverOmitted=false,onSummaryEntries}={}){
   let pairs=origins.filter(r=>quickClassify(r.clean)!=='meta'||/^(?:อาหาร|สินค้า)\s+\d/.test(r.clean)).map(origin=>({origin,row:parseItemLine(origin.clean,null,origin)}));
   const ctx=buildContext(pairs.map(p=>p.row));
   if(ctx)pairs=pairs.map(p=>{if(p.row.confidence>=0.72)return p;const row=parseItemLine(p.origin.clean,ctx,p.origin);return row.confidence>p.row.confidence?{...p,row}:p;});
-  let rows=applyZoneFilter(pairs.map(p=>p.row));
+  let rows=preserveItemLines?pairs.map(p=>p.row):applyZoneFilter(pairs.map(p=>p.row));
   if(recoverOmitted){
     const represented=new Set(rows.flatMap(r=>r.evidence.sourceLines));
     for(let i=0;i<literalLines.length;i++){

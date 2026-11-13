@@ -33,10 +33,10 @@ export function showReceiptError(message){const element=document.getElementById(
 const RECEIPT_ICON = `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 2 1.5V2"/><line x1="9" y1="8" x2="17" y2="8"/><line x1="9" y1="12" x2="17" y2="12"/><line x1="9" y1="16" x2="14" y2="16"/></svg>`;
 const BIN_ICON = binIcon({receipt:true});
 const BACK_CHEVRON = `<svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>`;
-function renderReceiptHeader(review=false){
+function renderReceiptHeader(review=false,prototypeLabel=null){
   return `<div class="top-bar receipt-header">
     <button class="back-btn" aria-label="ย้อนกลับ" id="${review?'backBtn':'p1BackBtn'}">${BACK_CHEVRON}</button>
-    <span class="top-title">${review?'โปรดตรวจสอบความถูกต้อง':'อ่านใบเสร็จ'}</span>
+    <span class="top-title">${review?'โปรดตรวจสอบความถูกต้อง':'อ่านใบเสร็จ'}${prototypeLabel?`<small class="ai-prototype-label"><a href="/ai-setup" target="_blank" rel="noopener">${escapeHtml(prototypeLabel)} · ตั้งค่า</a></small>`:''}</span>
     <div id="receipt-history"></div>
     ${review?'<button class="add-btn results-add-btn" id="addBtn">+ เพิ่มเมนู</button>':''}
   </div>`;
@@ -54,7 +54,7 @@ export function renderReceiptVision(visionState,{readFile}) {
         ${visionState.statusMsg
           ? `<div class="vision-status-msg ${visionState.statusKind}">${escapeHtml(visionState.statusMsg)}</div>`
           : `<div class="vision-empty-sub">รองรับ JPG, PNG, WebP หรือลากไฟล์มาวาง</div>`}
-        <div class="vision-login-notice">อ่านรูปในเครื่องคุณ เช็กชื่อเมนูกับราคาก่อนเพิ่มลงบิล</div>
+        <div class="vision-login-notice">${escapeHtml(visionState.notice??'อ่านรูปในเครื่องคุณ เช็กชื่อเมนูกับราคาก่อนเพิ่มลงบิล')}</div>
       </div>
     </button>`;
 
@@ -109,7 +109,7 @@ function renderPriceCell(state,row,colLabel) {
 export function renderInput(model,actions) {
   const app=document.getElementById("app"),state=model;
   app.innerHTML = `
-    ${renderReceiptHeader()}
+    ${renderReceiptHeader(false,model.vision?.prototypeLabel)}
     <div class="pg-input">
       <div class="input-inner">
         <div class="vision-zone" id="visionZone"></div>
@@ -163,7 +163,7 @@ export function renderReview(model,actions) {
 
   const subtotal = reviewSubtotal(state);
   const summaryView = resolveSummaryState(subtotal,state.summarySource,state.summaryEdits,state.discountCanonical);
-  const foodUnknown=state.rows.some(r=>!r.isDiscount&&(r.qty===null||r.priceValue===null||Object.keys(r.issues??{}).length));
+  const foodUnknown=state.rows.some(r=>!r.isDiscount&&(r.priceValue===null||r.issues?.price||r.priceSource==='unit_price'&&(r.qty===null||r.issues?.qty)));
   const pending=Object.keys(state.summaryIssues??{});
 
   const showMoney=formatMoneyDisplay;
@@ -171,13 +171,13 @@ export function renderReview(model,actions) {
     const v=summaryView[kind],issue=state.summaryIssues?.[kind];v.issue=issue;
     const fixed=kind==='discount'?state.discountCanonical==='amount':v.source?.mode==='amount';
     const active=!!v.source||v.amount>0||v.rate>0;
-    if(issue||foodUnknown&&active&&!fixed||kind==='vat'&&pending.includes('service_charge')||kind==='discount'&&pending.some(k=>k!=='discount'))v.amount=null;
+    if(issue||!fixed&&(foodUnknown&&active||kind==='vat'&&pending.includes('service_charge')||kind==='discount'&&pending.some(k=>k!=='discount')))v.amount=null;
     if(issue||foodUnknown&&active&&fixed)v.rate=null;
   }
   const previewTotal=receiptPreviewSummary(state,subtotal).total;
   const showSC   = summaryView.service_charge.amount>0||summaryView.service_charge.rate>0;
   const showVAT  = summaryView.vat.amount>0||summaryView.vat.rate>0;
-  const showDisc = summaryView.discount.amount>0;
+  const showDisc = summaryView.discount.amount>0||summaryView.discount.rate>0;
   const footerColspan = 3;
   const firstItemRow  = state.rows.find(r=>!r.isDiscount);
   const canonicalRole = firstItemRow?firstItemRow.priceSource:"line_total";
@@ -196,7 +196,7 @@ export function renderReview(model,actions) {
 
   app.innerHTML = `
     <div class="pg-results">
-      ${renderReceiptHeader(true)}
+      ${renderReceiptHeader(true,model.vision?.prototypeLabel)}
       <div class="sub-bar receipt-history-row" id="subBar" hidden></div>
       <div class="res-inner">
       <div class="summary-sticky-bar" id="summaryBar">
@@ -216,9 +216,9 @@ export function renderReview(model,actions) {
         <tbody>${rowsHtml}</tbody>
         <tfoot>
           <tr><td class="tfoot-label" colspan="${footerColspan}">รวมค่าอาหาร</td><td class="tfoot-value tfoot-subtotal">${showMoney(summaryView.subtotal)}</td><td></td></tr>
-          ${showSC?`<tr><td class="tfoot-label" colspan="${footerColspan}">Service Charge${escapeHtml(scRateLabel)}</td><td class="tfoot-value tfoot-sc">+${formatMoneyDisplay(summaryView.service_charge.amount)}</td><td></td></tr>`:""}
-          ${showVAT?`<tr><td class="tfoot-label" colspan="${footerColspan}">VAT${escapeHtml(vatRateLabel)}</td><td class="tfoot-value tfoot-vat">+${formatMoneyDisplay(summaryView.vat.amount)}</td><td></td></tr>`:""}
-          ${showDisc?`<tr><td class="tfoot-label" colspan="${footerColspan}">ส่วนลด${escapeHtml(discRateLabel)}</td><td class="tfoot-value tfoot-disc">-${formatMoneyDisplay(summaryView.discount.amount)}</td><td></td></tr>`:""}
+          ${showSC?`<tr><td class="tfoot-label" colspan="${footerColspan}">Service Charge${escapeHtml(scRateLabel)}</td><td class="tfoot-value tfoot-sc">${summaryView.service_charge.amount===null?'ยังไม่ทราบ':'+'+formatMoneyDisplay(summaryView.service_charge.amount)}</td><td></td></tr>`:""}
+          ${showVAT?`<tr><td class="tfoot-label" colspan="${footerColspan}">VAT${escapeHtml(vatRateLabel)}</td><td class="tfoot-value tfoot-vat">${summaryView.vat.amount===null?'ยังไม่ทราบ':'+'+formatMoneyDisplay(summaryView.vat.amount)}</td><td></td></tr>`:""}
+          ${showDisc?`<tr><td class="tfoot-label" colspan="${footerColspan}">ส่วนลด${escapeHtml(discRateLabel)}</td><td class="tfoot-value tfoot-disc">${summaryView.discount.amount===null?'ยังไม่ทราบ':'-'+formatMoneyDisplay(summaryView.discount.amount)}</td><td></td></tr>`:""}
           <tr class="tfoot-grand"><td class="tfoot-label" colspan="${footerColspan}">ยอดที่ต้องจ่าย</td><td class="tfoot-value tfoot-total">${showMoney(previewTotal)}</td><td></td></tr>
         </tfoot>
       </table></div></div>

@@ -51,7 +51,7 @@ function formatPctForDisplay(rate) {
 }
 function renderAdjustmentCard(kind, label, rate, amount, canonical, shortLabel = "", issue = null) {
   const fields2 = [["rate", rate, "%"], ["amount", amount, "฿"]].map(([field, value, unit]) => `<div class="sum-field ${field === canonical ? "canonical" : "derived"}">
-      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" aria-invalid="${issue?.editField === field ? "true" : "false"}" placeholder="0" value="${esc(issue?.editField === field ? issue.input ?? "" : value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
+      <input class="sum-input" data-summary-input="${kind}:${field}" aria-label="${label} (${unit})" aria-invalid="${issue?.editField === field ? "true" : "false"}" placeholder="${value === "" ? "ยังไม่ทราบ" : "0"}"  value="${esc(issue?.editField === field ? issue.input ?? "" : value)}" inputmode="decimal" enterkeyhint="done" autocomplete="off" spellcheck="false" />
       <span class="sum-field-lbl" aria-hidden="true">${unit}</span>
     </div>`).join("");
   const responsiveLabel = shortLabel ? ` data-full-label="${label}" data-short-label="${shortLabel}"` : "";
@@ -656,8 +656,9 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     return receiptDigits(raw ?? "").replace(/\u0e4d\u0e32/g, "ำ").normalize("NFC").replace(/\u00A0|\u3000|\uFEFF/g, " ").replace(/\t+/g, " ").replace(/\r/g, "").replace(/[，]/g, ",").replace(/[．｡。]/g, ".").split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
   }
   function looksComplete(line) {
-    const ts = String(line || "").trim().split(/\s+/);
-    return ts.length > 0 && /^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(ts[ts.length - 1]);
+    const tokens = String(line ?? "").trim().split(/\s+/);
+    if (/^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(tokens.at(-1))) return true;
+    return tokens.length >= 4 && tokens.slice(0, 3).every((t) => receiptNumber(t) !== null) && tokens.slice(3).some((t) => /\p{L}/u.test(t));
   }
   const lineText = (line) => typeof line === "string" ? line : line.text;
   function joinLines(lines) {
@@ -742,6 +743,10 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     let swallowNext = false;
     for (let i = 0; i < tokens.length; i++) {
       const raw = tokens[i];
+      if (raw === "?") {
+        kept.push(raw);
+        continue;
+      }
       const clean = cleanToken(raw);
       if (!clean) continue;
       if (/^(?:qty|quantity|จำนวน)$/i.test(clean) && /^\d{1,2}$/.test(tokens[i + 1] ?? "")) {
@@ -932,7 +937,45 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     };
     const price = (t) => t && receiptNumber(t.raw) !== null;
     const substantive = (ts) => ts.some((t) => /\p{L}/u.test(t.raw));
+    const nums = tokens.filter((t) => t.type === "number");
+    const words = tokens.filter((t) => t.type !== "number");
+    let fields2 = origin?.alignedFields;
+    if (!fields2 && !origin?.tableAmbiguous && nums.length === 3 && substantive(words) && words.every((t) => t.raw !== "?")) {
+      const matches = [];
+      for (const quantity2 of nums.filter((t) => t.couldBeQty)) {
+        for (const unit2 of nums.filter((t) => t !== quantity2)) {
+          const total = nums.find((t) => t !== quantity2 && t !== unit2);
+          if (price(unit2) && price(total) && Math.round(unit2.value * 100) * quantity2.value === Math.round(total.value * 100))
+            matches.push({ quantity: quantity2, unit: unit2, total });
+        }
+      }
+      const conventional = matches.find((m) => m.quantity === nums[0] && m.unit === nums[1] && m.total === nums[2]);
+      const chosen = conventional ?? (matches.length === 1 ? matches[0] : null);
+      if (chosen) fields2 = { ...chosen, name: words.map((t) => t.raw).join(" ") };
+      else if (matches.length) return row({ itemName: stripped, qty: null, issues: { qty: fieldIssue("ambiguous", "qty"), price: fieldIssue("ambiguous", "line_total") } });
+    }
+    if (fields2) {
+      const { quantity: quantity2, unit: unit2, total, name: name2 } = fields2;
+      identify("quantity", quantity2);
+      identify("unit", unit2);
+      identify("total", total);
+      const exact = Math.round(unit2.value * 100) * quantity2.value === Math.round(total.value * 100);
+      return row({
+        itemName: name2,
+        qty: quantity2.value,
+        priceSource: exact ? "unit_price" : "line_total",
+        priceValue: exact ? unit2.value : total.value,
+        confidence: 0.97,
+        pattern: "unit-qty-total"
+      });
+    }
     const last = tokens.at(-1), prefix = tokens.slice(0, -1);
+    if (last?.raw === "?") {
+      const qty = prefix.at(-1)?.couldBeQty ? prefix.at(-1) : null;
+      if (qty) identify("quantity", qty);
+      const name2 = prefix.filter((t) => t !== qty && t.raw !== "?").map((t) => t.raw).join(" ");
+      return row({ itemName: name2, qty: qty?.value ?? null, pattern: "unread-price", issues: { price: fieldIssue("missing", "line_total"), ...!qty ? { qty: fieldIssue("ambiguous", "qty") } : {} } });
+    }
     if (!price(last)) {
       const numeric = last && /^[+-]?\d[\d,.]*$/.test(last.raw);
       if (numeric) identify("total", last);
@@ -941,6 +984,7 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
       return row({ itemName: stripped, qty: qty?.value ?? 1, confidence: 0.15, pattern: "unread-price", issues: { price: fieldIssue(numeric ? "invalid" : "missing", "line_total") } });
     }
     identify("total", last);
+    if (prefix.some((t) => t.raw === "?")) return row({ itemName: prefix.filter((t) => t.raw !== "?").map((t) => t.raw).join(" "), qty: null, priceValue: last.value, issues: { qty: fieldIssue("ambiguous", "qty") }, pattern: "ambiguous-quantity" });
     const [qt, up, lt] = tokens.slice(-3), nameTokens = tokens.slice(0, -3);
     if (qt?.couldBeQty && price(up) && price(lt) && substantive(nameTokens)) {
       identify("quantity", qt);
@@ -1158,10 +1202,10 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
       return row.confidence >= 0.5;
     });
   }
-  function preprocessReceipt2(rawText) {
+  function preprocessReceipt2(rawText, { preserveItemLines = false } = {}) {
     const literalLines = String(rawText ?? "").split(/\r\n|\r|\n/);
     const records = literalLines.map((line, i) => ({ text: normalizeText2(line), sourceLines: [i], table: line.includes("	") })).filter((r) => r.text);
-    const rawLines = records.map((r) => r.text), merged = mergeWrappedLines2(collapseVerticalOCR(records));
+    const rawLines = records.map((r) => r.text), merged = preserveItemLines ? records : mergeWrappedLines2(collapseVerticalOCR(records));
     const billStyle = detectBillNumericStyle(rawLines), anchors = findMetadataAnchorIndices(merged.map(lineText));
     let headers = null;
     const headerAliases = [/^(?:qty|quantity|จำนวน)$/i, /^(?:unit price|price|ราคา|หน่วยละ)$/i, /^(?:total|line total|amount|ยอดรวม|จำนวนเงิน)$/i];
@@ -1181,12 +1225,20 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
         const col = headers.findIndex((c) => re.test(c));
         return col >= 0 && receiptNumber(cells[col], { quantity: re === headerAliases[0] }) !== null;
       });
-      origins.push({ ...record, clean, rawLine: literal, itemCode: codeColumn >= 0 ? cells[codeColumn] : null, labeledQty: !!aligned, tableAmbiguous: !!headers && cells.length > 1 && !aligned });
+      let alignedFields = null;
+      if (aligned) {
+        const cols = headerAliases.map((re) => headers.findIndex((c) => re.test(c)));
+        const name = cells.filter((_, i) => i !== codeColumn && !cols.includes(i)).join(" ").trim();
+        const literalCells = literal.split("	");
+        const [quantity, unit, total] = cols.map((i) => ({ literal: literalCells[i].trim(), value: receiptNumber(cells[i]) }));
+        if (name) alignedFields = { name, quantity, unit, total };
+      }
+      origins.push({ ...record, alignedFields, clean, rawLine: literal, itemCode: codeColumn >= 0 ? cells[codeColumn] : null, labeledQty: !!aligned, tableAmbiguous: !!headers && cells.length > 1 && !aligned });
     }
     return { cleanLines: origins.map((r) => r.clean), rawLines, origins, literalLines };
   }
-  function parseReceipt2(rawText, { recoverOmitted = false, onSummaryEntries } = {}) {
-    const { origins, literalLines } = preprocessReceipt2(rawText);
+  function parseReceipt2(rawText, { recoverOmitted = false, onSummaryEntries, preserveItemLines = false } = {}) {
+    const { origins, literalLines } = preprocessReceipt2(rawText, { preserveItemLines });
     const summaryIssues = {};
     const summarySource = extractSummarySources2(literalLines, (entries) => {
       onSummaryEntries?.(entries);
@@ -1204,7 +1256,7 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
       const row = parseItemLine2(p.origin.clean, ctx, p.origin);
       return row.confidence > p.row.confidence ? { ...p, row } : p;
     });
-    let rows = applyZoneFilter(pairs.map((p) => p.row));
+    let rows = preserveItemLines ? pairs.map((p) => p.row) : applyZoneFilter(pairs.map((p) => p.row));
     if (recoverOmitted) {
       const represented = new Set(rows.flatMap((r) => r.evidence.sourceLines));
       for (let i = 0; i < literalLines.length; i++) {
@@ -1454,11 +1506,11 @@ function copyReceiptForImport(draft) {
   next.items = next.items.map((item) => ({ ...item, id: newId(), groupId: next.group.id }));
   return next;
 }
-function parseDraft(raw, { id = newId } = {}) {
+function parseDraft(raw, { id = newId, preserveItemLines = false } = {}) {
   if (typeof raw !== "string" || raw.length > 1e5) throw Error("ข้อความใบเสร็จยาวเกินไป");
   const normalized = raw.replace(/[๐-๙]/g, (c) => String(c.charCodeAt(0) - 3664)).replace(/\u0e4d\u0e32/g, "ำ");
   const notices = [];
-  const parsed = parseReceipt(raw, { recoverOmitted: true, onSummaryEntries(entries) {
+  const parsed = parseReceipt(raw, { recoverOmitted: true, preserveItemLines, onSummaryEntries(entries) {
     const vat = entries.filter((e) => e.kind === "vat" && /^(?:vat|value added tax|ภาษี(?:มูลค่าเพิ่ม)?)\s*(?:inclusive|included|incl\.|รวมในราคา|รวมอยู่ในราคา)/i.test(e.norm));
     if (vat.length) notices.push(`ใบเสร็จระบุว่า “${vat.map((e) => e.raw).join(" / ")}” หากราคาอาหารรวม VAT แล้ว ให้ตั้งค่า VAT เป็น 0 เพื่อไม่ให้คิดภาษีซ้ำ`);
     const discounts = entries.filter((e) => e.kind === "discount");
@@ -1505,8 +1557,8 @@ function completeReview(parsed) {
     discountCanonical: parsed.summarySource?.discount?.mode === "amount" ? "amount" : "rate"
   };
 }
-function createReceiptReview(raw) {
-  return completeReview(parseDraft(raw));
+function createReceiptReview(raw, options) {
+  return completeReview(parseDraft(raw, options));
 }
 
 // src/receipt-view.mjs
@@ -1551,10 +1603,10 @@ function showReceiptError(message) {
 var RECEIPT_ICON = `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 2 1.5V2"/><line x1="9" y1="8" x2="17" y2="8"/><line x1="9" y1="12" x2="17" y2="12"/><line x1="9" y1="16" x2="14" y2="16"/></svg>`;
 var BIN_ICON = binIcon({ receipt: true });
 var BACK_CHEVRON = `<svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>`;
-function renderReceiptHeader(review = false) {
+function renderReceiptHeader(review = false, prototypeLabel = null) {
   return `<div class="top-bar receipt-header">
     <button class="back-btn" aria-label="ย้อนกลับ" id="${review ? "backBtn" : "p1BackBtn"}">${BACK_CHEVRON}</button>
-    <span class="top-title">${review ? "โปรดตรวจสอบความถูกต้อง" : "อ่านใบเสร็จ"}</span>
+    <span class="top-title">${review ? "โปรดตรวจสอบความถูกต้อง" : "อ่านใบเสร็จ"}${prototypeLabel ? `<small class="ai-prototype-label"><a href="/ai-setup" target="_blank" rel="noopener">${esc(prototypeLabel)} · ตั้งค่า</a></small>` : ""}</span>
     <div id="receipt-history"></div>
     ${review ? '<button class="add-btn results-add-btn" id="addBtn">+ เพิ่มเมนู</button>' : ""}
   </div>`;
@@ -1570,7 +1622,7 @@ function renderReceiptVision(visionState2, { readFile }) {
         <div class="vision-empty-icon">${RECEIPT_ICON}</div>
         <div class="vision-empty-cta">อัพโหลดรูปใบเสร็จ</div>
         ${visionState2.statusMsg ? `<div class="vision-status-msg ${visionState2.statusKind}">${esc(visionState2.statusMsg)}</div>` : `<div class="vision-empty-sub">รองรับ JPG, PNG, WebP หรือลากไฟล์มาวาง</div>`}
-        <div class="vision-login-notice">อ่านรูปในเครื่องคุณ เช็กชื่อเมนูกับราคาก่อนเพิ่มลงบิล</div>
+        <div class="vision-login-notice">${esc(visionState2.notice ?? "อ่านรูปในเครื่องคุณ เช็กชื่อเมนูกับราคาก่อนเพิ่มลงบิล")}</div>
       </div>
     </button>`;
   const dropArea = document.getElementById("visionDropArea");
@@ -1623,7 +1675,7 @@ function renderPriceCell(state2, row, colLabel) {
 function renderInput(model, actions) {
   const app = document.getElementById("app"), state2 = model;
   app.innerHTML = `
-    ${renderReceiptHeader()}
+    ${renderReceiptHeader(false, model.vision?.prototypeLabel)}
     <div class="pg-input">
       <div class="input-inner">
         <div class="vision-zone" id="visionZone"></div>
@@ -1684,7 +1736,7 @@ function renderReview(model, actions) {
   let summaryFocusTarget = null;
   const subtotal = reviewSubtotal(state2);
   const summaryView = receiptSummary(subtotal, state2.summarySource, state2.summaryEdits, state2.discountCanonical);
-  const foodUnknown = state2.rows.some((r) => !r.isDiscount && (r.qty === null || r.priceValue === null || Object.keys(r.issues ?? {}).length));
+  const foodUnknown = state2.rows.some((r) => !r.isDiscount && (r.priceValue === null || r.issues?.price || r.priceSource === "unit_price" && (r.qty === null || r.issues?.qty)));
   const pending = Object.keys(state2.summaryIssues ?? {});
   const showMoney = formatMoneyDisplay;
   for (const kind of ["service_charge", "vat", "discount"]) {
@@ -1692,13 +1744,13 @@ function renderReview(model, actions) {
     v.issue = issue;
     const fixed = kind === "discount" ? state2.discountCanonical === "amount" : v.source?.mode === "amount";
     const active2 = !!v.source || v.amount > 0 || v.rate > 0;
-    if (issue || foodUnknown && active2 && !fixed || kind === "vat" && pending.includes("service_charge") || kind === "discount" && pending.some((k) => k !== "discount")) v.amount = null;
+    if (issue || !fixed && (foodUnknown && active2 || kind === "vat" && pending.includes("service_charge") || kind === "discount" && pending.some((k) => k !== "discount"))) v.amount = null;
     if (issue || foodUnknown && active2 && fixed) v.rate = null;
   }
   const previewTotal = receiptPreviewSummary(state2, subtotal).total;
   const showSC = summaryView.service_charge.amount > 0 || summaryView.service_charge.rate > 0;
   const showVAT = summaryView.vat.amount > 0 || summaryView.vat.rate > 0;
-  const showDisc = summaryView.discount.amount > 0;
+  const showDisc = summaryView.discount.amount > 0 || summaryView.discount.rate > 0;
   const footerColspan = 3;
   const firstItemRow = state2.rows.find((r) => !r.isDiscount);
   const canonicalRole = firstItemRow ? firstItemRow.priceSource : "line_total";
@@ -1716,7 +1768,7 @@ function renderReview(model, actions) {
   const discRateLabel = state2.discountCanonical === "rate" && summaryView.discount.rate > 0 ? ` (${formatPctForDisplay(summaryView.discount.rate)}%)` : "";
   app.innerHTML = `
     <div class="pg-results">
-      ${renderReceiptHeader(true)}
+      ${renderReceiptHeader(true, model.vision?.prototypeLabel)}
       <div class="sub-bar receipt-history-row" id="subBar" hidden></div>
       <div class="res-inner">
       <div class="summary-sticky-bar" id="summaryBar">
@@ -1746,9 +1798,9 @@ function renderReview(model, actions) {
         <tbody>${rowsHtml}</tbody>
         <tfoot>
           <tr><td class="tfoot-label" colspan="${footerColspan}">รวมค่าอาหาร</td><td class="tfoot-value tfoot-subtotal">${showMoney(summaryView.subtotal)}</td><td></td></tr>
-          ${showSC ? `<tr><td class="tfoot-label" colspan="${footerColspan}">Service Charge${esc(scRateLabel)}</td><td class="tfoot-value tfoot-sc">+${formatMoneyDisplay(summaryView.service_charge.amount)}</td><td></td></tr>` : ""}
-          ${showVAT ? `<tr><td class="tfoot-label" colspan="${footerColspan}">VAT${esc(vatRateLabel)}</td><td class="tfoot-value tfoot-vat">+${formatMoneyDisplay(summaryView.vat.amount)}</td><td></td></tr>` : ""}
-          ${showDisc ? `<tr><td class="tfoot-label" colspan="${footerColspan}">ส่วนลด${esc(discRateLabel)}</td><td class="tfoot-value tfoot-disc">-${formatMoneyDisplay(summaryView.discount.amount)}</td><td></td></tr>` : ""}
+          ${showSC ? `<tr><td class="tfoot-label" colspan="${footerColspan}">Service Charge${esc(scRateLabel)}</td><td class="tfoot-value tfoot-sc">${summaryView.service_charge.amount === null ? "ยังไม่ทราบ" : "+" + formatMoneyDisplay(summaryView.service_charge.amount)}</td><td></td></tr>` : ""}
+          ${showVAT ? `<tr><td class="tfoot-label" colspan="${footerColspan}">VAT${esc(vatRateLabel)}</td><td class="tfoot-value tfoot-vat">${summaryView.vat.amount === null ? "ยังไม่ทราบ" : "+" + formatMoneyDisplay(summaryView.vat.amount)}</td><td></td></tr>` : ""}
+          ${showDisc ? `<tr><td class="tfoot-label" colspan="${footerColspan}">ส่วนลด${esc(discRateLabel)}</td><td class="tfoot-value tfoot-disc">${summaryView.discount.amount === null ? "ยังไม่ทราบ" : "-" + formatMoneyDisplay(summaryView.discount.amount)}</td><td></td></tr>` : ""}
           <tr class="tfoot-grand"><td class="tfoot-label" colspan="${footerColspan}">ยอดที่ต้องจ่าย</td><td class="tfoot-value tfoot-total">${showMoney(previewTotal)}</td><td></td></tr>
         </tfoot>
       </table></div></div>
@@ -1853,7 +1905,7 @@ function renderReview(model, actions) {
 }
 
 // src/receipt-ocr-controller.mjs
-function createReceiptOcrController({ reader, prepareImage: prepareImage2, getRaw, parseText, present }) {
+function createReceiptOcrController({ reader, prepareImage: prepareImage2, getRaw, getEditGeneration = () => 0, parseText, present }) {
   let generation = 0, active2 = null, disposed = false;
   const isCurrent = (operation) => !disposed && active2 === operation && operation.token === generation;
   function close(operation) {
@@ -1873,7 +1925,7 @@ function createReceiptOcrController({ reader, prepareImage: prepareImage2, getRa
   async function read(file) {
     if (disposed) return;
     cancel();
-    const operation = { token: ++generation, progress: 0, startingRaw: getRaw(), preparation: new AbortController() };
+    const operation = { token: ++generation, progress: 0, startingRaw: getRaw(), editGeneration: getEditGeneration(), preparation: new AbortController() };
     active2 = operation;
     const token = operation.token;
     present.open(token);
@@ -1882,6 +1934,10 @@ function createReceiptOcrController({ reader, prepareImage: prepareImage2, getRa
       const image = await prepareImage2(file, { signal: operation.preparation.signal });
       if (!isCurrent(operation)) return;
       const raw = await reader.read(image, (event) => {
+        if (isCurrent(operation) && event.status === "waiting for ai") {
+          present.progress(token, { label: "กำลังอ่านใบเสร็จด้วย AI…", percent: 0, note: null, preparing: true });
+          return;
+        }
         if (!isCurrent(operation) || event.status !== "recognizing text" || !Number.isFinite(event.progress)) return;
         operation.progress = Math.max(operation.progress, Math.min(95, Math.max(0, event.progress * 95)));
         present.progress(token, {
@@ -1892,11 +1948,11 @@ function createReceiptOcrController({ reader, prepareImage: prepareImage2, getRa
         });
       });
       if (!isCurrent(operation)) return;
-      if (getRaw() !== operation.startingRaw) throw Error("ข้อความที่คุณวางยังอยู่ในหน้านี้ ลองเลือกรูปอีกครั้ง");
+      if (getRaw() !== operation.startingRaw || getEditGeneration() !== operation.editGeneration) throw Error("ข้อความที่คุณวางยังอยู่ในหน้านี้ ลองเลือกรูปอีกครั้ง");
       present.progress(token, { label: "อ่านรูปแล้ว", percent: 100, note: null, preparing: false });
       await present.success(token);
       if (!isCurrent(operation)) return;
-      if (getRaw() !== operation.startingRaw) throw Error("ข้อความที่คุณวางยังอยู่ในหน้านี้ ลองเลือกรูปอีกครั้ง");
+      if (getRaw() !== operation.startingRaw || getEditGeneration() !== operation.editGeneration) throw Error("ข้อความที่คุณวางยังอยู่ในหน้านี้ ลองเลือกรูปอีกครั้ง");
       await parseText(raw, () => isCurrent(operation));
     } catch (error) {
       if (isCurrent(operation)) present.error(token, error);
@@ -3139,6 +3195,49 @@ async function prepareImage(file, { signal } = {}) {
   }
 }
 
+// src/ai-receipt-reader.mjs
+function createAiReceiptReader({ endpoint, token, fetcher = globalThis.fetch, timeoutMs = 75e3 }) {
+  let active2 = null;
+  function cancel() {
+    active2?.abort();
+    active2 = null;
+  }
+  async function read(bytes, onProgress = () => {
+  }) {
+    cancel();
+    if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > 8 * 1024 * 1024) throw Error("รูปใหญ่เกินไป ลองลดขนาดรูปก่อนอ่านด้วย AI");
+    const operation = new AbortController();
+    active2 = operation;
+    const timer = setTimeout(() => operation.abort(Error("AI ใช้เวลานานเกินไป ลองใหม่จะนับเป็นการอ่านอีกครั้ง")), timeoutMs);
+    try {
+      onProgress({ status: "waiting for ai" });
+      const response = await fetcher(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "image/png", "X-FairShare-Prototype": token },
+        body: bytes,
+        signal: operation.signal,
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "error"
+      });
+      if (!response.ok) {
+        const messages = { 403: "เปิดหน้าทดลองใหม่ แล้วลองอีกครั้ง", 413: "รูปใหญ่เกินไป ลองลดขนาดรูป", 429: "ถึงขีดจำกัดการอ่าน หรือ AI กำลังทำงานอยู่ ลองอีกครั้งภายหลัง", 503: "ยังไม่ได้ตั้งค่า AI เปิดหน้าตั้งค่าของตัวทดลองก่อนอ่านรูป", 502: "AI ยังอ่านรูปนี้ไม่ได้ ลองรูปที่ชัดขึ้นหรือวางข้อความแทน", 504: "ยังยืนยันผลจาก AI ไม่ได้ การลองใหม่จะนับเป็นการอ่านอีกครั้ง" };
+        throw Error(messages[response.status] ?? "ติดต่อ AI ไม่สำเร็จ ข้อความเดิมยังอยู่");
+      }
+      const body = await response.text();
+      if (body.length > 65e4) throw Error("ข้อความจาก AI ยาวเกินไป ลองแบ่งรูป");
+      const result = JSON.parse(body);
+      if (typeof result.text !== "string" || !result.text.trim() || result.text.length > 1e5) throw Error("AI ส่งข้อความไม่ครบหรืออ่านไม่ได้ ลองรูปที่ชัดขึ้น");
+      operation.signal.throwIfAborted();
+      return result.text;
+    } finally {
+      clearTimeout(timer);
+      if (active2 === operation) active2 = null;
+    }
+  }
+  return { read, cancel };
+}
+
 // src/bill-operations.mjs
 var copy2 = (value) => structuredClone(value);
 function isEmptyBillContent(bill) {
@@ -3712,14 +3811,17 @@ function ocrSetProgress(label, pct, note) {
     } else noteEl.style.display = "none";
   }
 }
-var visionState = { statusMsg: "", statusKind: "" };
-var localReader = createOcrReader(browserWorker);
+var prototype = document.querySelector('meta[name="fairshare-ai-prototype"]');
+var sampleMode = prototype?.dataset.sample === "true";
+var visionState = { statusMsg: "", statusKind: "", prototypeLabel: prototype ? sampleMode ? "ตัวอย่างหน้าจอ · ไม่ได้อ่านรูปจริง" : "ทดลอง AI vision" : null, notice: prototype ? sampleMode ? "ตัวอย่างหน้าจอ ใช้ข้อความที่เตรียมไว้ ไม่ได้อ่านรูปด้วย AI จริง" : "ส่งรูปไปยัง Google AI เพื่ออ่านข้อความ ลบข้อมูลส่วนตัวก่อนเลือก เช็กเมนูและราคาก่อนเพิ่มลงบิล" : void 0 };
+var receiptReader = prototype ? createAiReceiptReader({ endpoint: "/api/receipt-vision", token: prototype.content }) : createOcrReader(browserWorker);
 var overlay = document.getElementById("ocr-prog-ov");
 var ocrPresentation = null;
 var ocrController = createReceiptOcrController({
-  reader: localReader,
+  reader: receiptReader,
   prepareImage,
   getRaw: () => state.raw,
+  getEditGeneration: () => textGeneration,
   parseText: parseCurrentText,
   present: {
     open(token) {
@@ -3745,9 +3847,9 @@ var ocrController = createReceiptOcrController({
         });
       }
     },
-    error(token) {
+    error(token, error) {
       if (ocrPresentation?.token !== token) return;
-      visionState.statusMsg = "อ่านรูปนี้ไม่ได้ ลองใช้รูปที่ชัดขึ้น หรือคัดลอกข้อความจากรูปมาวางแทน";
+      visionState.statusMsg = prototype ? error.message : "อ่านรูปนี้ไม่ได้ ลองใช้รูปที่ชัดขึ้น หรือคัดลอกข้อความจากรูปมาวางแทน";
       visionState.statusKind = "error";
       renderVisionZone();
       ocrPresentation.succeeded = false;
@@ -3808,7 +3910,7 @@ async function parseCurrentText(raw = state.raw, isCurrent = () => true) {
   const resume = !draftBlocked && lastDraft && raw === lastDraft.raw;
   if (raw === state.raw) pushTextHistory(raw);
   try {
-    result = resume ? null : createReceiptReview(raw);
+    result = resume ? null : createReceiptReview(raw, { preserveItemLines: !!prototype });
     loaded = billSession ? await billSession.load({ canAdopt: current }) : null;
   } catch (error) {
     if (!current()) return;
