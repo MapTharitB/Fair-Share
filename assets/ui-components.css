@@ -33,6 +33,15 @@ body::before{content:'';position:fixed;inset:0;z-index:-1;pointer-events:none;ba
 .scard{background:var(--surface-glass-centered-base)}
 #toast{background:var(--surface-glass)}
 
+/* Group reflections share viewport coordinates. Only the decorative child is
+   clipped, preserving card shadows, focus and the existing content layout. */
+:where(.glass-viewport){position:relative}
+.glass-viewport{isolation:isolate;background:var(--surface-glass-centered-base)}
+.glass-viewport > .glass-viewport-clip{position:absolute;inset:0;border-radius:inherit;clip-path:inset(0 round var(--radius-card));pointer-events:none;z-index:-1}
+.glass-viewport-clip::before{content:'';position:fixed;inset:0;background:var(--surface-glass-reflection);pointer-events:none}
+.scard.glass-viewport > .glass-viewport-clip{z-index:1}
+.scard.glass-viewport::after{content:none}
+
 :is(#bill-name-control,.bill-name-control),#bill-actions{
   background:var(--surface-glass-centered);
   border:var(--border-thin) solid var(--color-glass-rim);

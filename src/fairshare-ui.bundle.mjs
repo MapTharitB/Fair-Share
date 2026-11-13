@@ -1,3 +1,33 @@
+// src/glass-surfaces.mjs
+var GROUPS = ".menu-list-gap.card,#people-list-wrap > .card,.split-card,.scard,.tbl-card,.ta-card,.fs-sheet";
+function trackGlassSurfaces(root, signal) {
+  if (signal.aborted) return;
+  function decorate(node) {
+    if (node.closest(".summary-image-root")) return;
+    if (!node.querySelector(":scope > .glass-viewport-clip")) {
+      const clip = root.createElement("span");
+      clip.className = "glass-viewport-clip";
+      clip.setAttribute("aria-hidden", "true");
+      node.prepend(clip);
+    }
+    node.classList.add("glass-viewport");
+  }
+  function scan(node) {
+    if (node.nodeType !== 1 && node !== root) return;
+    if (node.matches?.(GROUPS)) decorate(node);
+    node.querySelectorAll(GROUPS).forEach(decorate);
+  }
+  scan(root);
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      if (record.target.matches?.(GROUPS)) decorate(record.target);
+      record.addedNodes.forEach(scan);
+    }
+  });
+  observer.observe(root, { childList: true, subtree: true });
+  signal.addEventListener("abort", () => observer.disconnect(), { once: true });
+}
+
 // src/text-measure.mjs
 function createTextMeasurer() {
   let context, ready;
@@ -4846,6 +4876,7 @@ function trackPointerHover(root, signal) {
 // src/fairshare-ui.mjs
 var pageLifetime = new AbortController(), pageTimers = /* @__PURE__ */ new Set(), pageFrames = /* @__PURE__ */ new Set();
 trackPointerHover(document, pageLifetime.signal);
+trackGlassSurfaces(document, pageLifetime.signal);
 var pageDisposed = false;
 function listen(target, type, callback, options = {}) {
   target.addEventListener(type, callback, { ...typeof options === "boolean" ? { capture: options } : options, signal: pageLifetime.signal });

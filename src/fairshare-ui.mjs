@@ -1,3 +1,4 @@
+import {trackGlassSurfaces} from './glass-surfaces.mjs';
 import {createTextMeasurer} from './text-measure.mjs';
 import {mountPeople,mountItem} from './main-editor-view.mjs';
 import {mountMenu,mountSummary} from './main-bill-view.mjs';
@@ -27,6 +28,7 @@ import {approvedBill,approvedShares,approvedBillTotals,recalculateApprovedItem} 
 import {emptyBill,newId} from './bill-state.mjs';
 const pageLifetime=new AbortController(),pageTimers=new Set(),pageFrames=new Set();
 trackPointerHover(document,pageLifetime.signal);
+trackGlassSurfaces(document,pageLifetime.signal);
 let pageDisposed=false;
 function listen(target,type,callback,options={}){target.addEventListener(type,callback,{...(typeof options==='boolean'?{capture:options}:options),signal:pageLifetime.signal});}
 function pageTimeout(callback,delay){const timer=setTimeout(()=>{pageTimers.delete(timer);if(!pageDisposed)callback();},delay);pageTimers.add(timer);return timer;}

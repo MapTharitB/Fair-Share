@@ -1,3 +1,4 @@
+import {trackGlassSurfaces} from './glass-surfaces.mjs';
 import {renderInput,renderReview,renderReceiptVision,showReceiptError,updateReceiptTextControls,receiptActionFallback} from './receipt-view.mjs';
 import {createReceiptOcrController} from './receipt-ocr-controller.mjs';
 import {createReceiptImportController} from './receipt-import-controller.mjs';
@@ -17,6 +18,7 @@ import {trackPointerHover} from './pointer-hover.mjs';
 import {createInteractionBusy} from './interaction-busy.mjs';
 const receiptLifetime=new AbortController();
 trackPointerHover(document,receiptLifetime.signal);
+trackGlassSurfaces(document,receiptLifetime.signal);
 const receiptInteraction=createInteractionBusy(document.getElementById('app'),{signal:receiptLifetime.signal});
 function onReceipt(type,callback){addEventListener(type,callback,{signal:receiptLifetime.signal});}
 let warnedDraft=null;

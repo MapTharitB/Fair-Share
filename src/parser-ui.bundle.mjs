@@ -1,3 +1,33 @@
+// src/glass-surfaces.mjs
+var GROUPS = ".menu-list-gap.card,#people-list-wrap > .card,.split-card,.scard,.tbl-card,.ta-card,.fs-sheet";
+function trackGlassSurfaces(root, signal) {
+  if (signal.aborted) return;
+  function decorate(node) {
+    if (node.closest(".summary-image-root")) return;
+    if (!node.querySelector(":scope > .glass-viewport-clip")) {
+      const clip = root.createElement("span");
+      clip.className = "glass-viewport-clip";
+      clip.setAttribute("aria-hidden", "true");
+      node.prepend(clip);
+    }
+    node.classList.add("glass-viewport");
+  }
+  function scan(node) {
+    if (node.nodeType !== 1 && node !== root) return;
+    if (node.matches?.(GROUPS)) decorate(node);
+    node.querySelectorAll(GROUPS).forEach(decorate);
+  }
+  scan(root);
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      if (record.target.matches?.(GROUPS)) decorate(record.target);
+      record.addedNodes.forEach(scan);
+    }
+  });
+  observer.observe(root, { childList: true, subtree: true });
+  signal.addEventListener("abort", () => observer.disconnect(), { once: true });
+}
+
 // src/ui-icons.mjs
 var BIN_GEOMETRY = `<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>`;
 function binIcon({ receipt = false } = {}) {
@@ -3196,6 +3226,17 @@ async function prepareImage(file, { signal } = {}) {
 }
 
 // src/ai-receipt-reader.mjs
+function calculationText(text2) {
+  const lines = text2.split(/\r?\n/);
+  const category = /^\s*อาหารและเครื่องดื่ม\s+([\d,]+(?:\.\d{1,2})?)\s*$/;
+  const index = lines.findIndex((line) => category.test(line));
+  if (index > 0) {
+    const review = createReceiptReview(lines.slice(0, index).join("\n"), { preserveItemLines: true });
+    const value = Number(lines[index].match(category)[1].replaceAll(",", ""));
+    if (value > 0 && review.rows.length > 1 && review.rows.every((row) => !row.needsReview) && reviewSubtotal(review) === value) lines.splice(index, 1);
+  }
+  return lines.filter((line) => !/^\s*(?:grand\s+total|total|subtotal|ยอดรวม|ยอดสุทธิ|รวมทั้งสิ้น)\s*:?\s+[฿$]?[\d,]+(?:\.\d{1,2})?\s*$/i.test(line)).join("\n");
+}
 function createAiReceiptReader({ endpoint, token, fetcher = globalThis.fetch, timeoutMs = 75e3 }) {
   let active2 = null;
   function cancel() {
@@ -3229,7 +3270,9 @@ function createAiReceiptReader({ endpoint, token, fetcher = globalThis.fetch, ti
       const result = JSON.parse(body);
       if (typeof result.text !== "string" || !result.text.trim() || result.text.length > 1e5) throw Error("AI ส่งข้อความไม่ครบหรืออ่านไม่ได้ ลองรูปที่ชัดขึ้น");
       operation.signal.throwIfAborted();
-      return result.text;
+      const text2 = calculationText(result.text);
+      if (!text2.trim()) throw Error("ไม่พบรายการสินค้าในผลจาก AI");
+      return text2;
     } finally {
       clearTimeout(timer);
       if (active2 === operation) active2 = null;
@@ -3748,6 +3791,7 @@ function trackPointerHover(root, signal) {
 // src/parser-ui.mjs
 var receiptLifetime = new AbortController();
 trackPointerHover(document, receiptLifetime.signal);
+trackGlassSurfaces(document, receiptLifetime.signal);
 var receiptInteraction = createInteractionBusy(document.getElementById("app"), { signal: receiptLifetime.signal });
 function onReceipt(type, callback) {
   addEventListener(type, callback, { signal: receiptLifetime.signal });

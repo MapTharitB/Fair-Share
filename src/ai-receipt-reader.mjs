@@ -1,3 +1,19 @@
+import {createReceiptReview,reviewSubtotal} from './receipt-draft.mjs';
+
+// A category name can also describe a real purchase. Require corroborating item
+// amounts before removing the ambiguous Thai label from the AI transcription.
+function calculationText(text){
+  const lines=text.split(/\r?\n/);
+  const category=/^\s*อาหารและเครื่องดื่ม\s+([\d,]+(?:\.\d{1,2})?)\s*$/;
+  const index=lines.findIndex(line=>category.test(line));
+  if(index>0){
+    const review=createReceiptReview(lines.slice(0,index).join('\n'),{preserveItemLines:true});
+    const value=Number(lines[index].match(category)[1].replaceAll(',',''));
+    if(value>0 && review.rows.length>1 && review.rows.every(row=>!row.needsReview) && reviewSubtotal(review)===value)lines.splice(index,1);
+  }
+  return lines.filter(line=>!/^\s*(?:grand\s+total|total|subtotal|ยอดรวม|ยอดสุทธิ|รวมทั้งสิ้น)\s*:?\s+[฿$]?[\d,]+(?:\.\d{1,2})?\s*$/i.test(line)).join('\n');
+}
+
 /** Same-origin development transport. The local server owns provider credentials. */
 export function createAiReceiptReader({endpoint,token,fetcher=globalThis.fetch,timeoutMs=75000}) {
   let active=null;
@@ -20,7 +36,9 @@ export function createAiReceiptReader({endpoint,token,fetcher=globalThis.fetch,t
       const result=JSON.parse(body);
       if(typeof result.text!=='string'||!result.text.trim()||result.text.length>100000)throw Error('AI ส่งข้อความไม่ครบหรืออ่านไม่ได้ ลองรูปที่ชัดขึ้น');
       operation.signal.throwIfAborted();
-      return result.text;
+      const text=calculationText(result.text);
+      if(!text.trim())throw Error('ไม่พบรายการสินค้าในผลจาก AI');
+      return text;
     }finally{clearTimeout(timer);if(active===operation)active=null;}
   }
   return {read,cancel};
