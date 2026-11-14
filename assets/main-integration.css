@@ -111,6 +111,7 @@ input{font-size:var(--text-16);}
 
 #hdr.history-wrapped{flex-wrap:wrap;padding-block:var(--space-4)}
 #hdr.history-wrapped #header-history{order:1;flex-basis:100%;justify-content:flex-end}
+body.subpage #hdr.history-wrapped .history-button{flex:1}
 #top-tabs,#item-warn-sticky{top:var(--main-header-height,var(--hdr-h))}
 #screen-summary .per-person-sticky{top:var(--main-summary-top,94px);margin-top:0;gap:var(--space-8);flex-wrap:wrap;}
 #hdr-item-total{min-width:0;max-width:42%;overflow-x:auto;scrollbar-width:thin}
