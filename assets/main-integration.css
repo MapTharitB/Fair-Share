@@ -136,7 +136,10 @@ input{font-size:var(--text-16);}
 .dist-bar-row.dist-cards-stacked{grid-template-columns:minmax(0,1fr)}
 .dist-bar-ctrl .segmented{width:100%}
 /* Keep the measured distribution pairs side by side on narrow portrait screens. */
-@media(max-width:500px){.dist-bar-ctrl .segmented-face{padding-inline:var(--space-4)}}
+@media(max-width:500px){
+  .dist-bar,.dist-bar.dist-bar-wide{padding-inline:var(--space-8)}
+  .dist-bar-ctrl .segmented-face{padding-inline:var(--space-7)}
+}
 
 #bill-context{display:flex;align-items:center;gap:var(--space-10);min-height:var(--size-standard-target);margin:var(--space-8) var(--space-16) 0;min-width:0}
 #bill-context[hidden]{display:none}
