@@ -138,6 +138,7 @@ input{font-size:var(--text-16);}
 /* Keep the measured distribution pairs side by side on narrow portrait screens. */
 @media(max-width:500px){
   .dist-bar,.dist-bar.dist-bar-wide{padding-inline:var(--space-8)}
+  .dist-bar:not(.dist-bar-wide) .dist-bar-ctrl{width:100%}
   .dist-bar-ctrl .segmented-face{padding-inline:var(--space-7)}
 }
 
