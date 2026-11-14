@@ -1186,15 +1186,10 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
   function markQuantityColumns(origins) {
     const candidates = origins.filter((origin) => {
       const tokens = tokenizeLine(origin.clean), middle = tokens.slice(1, -1), last = tokens.at(-1);
+      if (/^7\s+up\s+\S+$/i.test(origin.clean)) return false;
       return !origin.alignedFields && !origin.tableAmbiguous && tokens[0]?.couldBeQty && middle.some((t) => /\p{L}/u.test(t.raw)) && middle.at(-1)?.type !== "number" && (receiptNumber(last?.raw ?? "") !== null || last?.raw === "?");
     });
-    const names = /* @__PURE__ */ new Map();
-    for (const c of candidates) {
-      const parts = c.clean.split(" "), token = parts[0];
-      if (!names.has(token)) names.set(token, /* @__PURE__ */ new Set());
-      names.get(token).add(parts.slice(1, -1).join(" "));
-    }
-    for (const c of candidates) if (names.get(c.clean.split(" ")[0]).size >= 2) c.quantityFirst = true;
+    if (candidates.length >= 2) for (const c of candidates) c.quantityFirst = true;
   }
   const _SC_STRONG = /^(?:service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส)(?=[\s%.,฿$\d]|$)/i;
   const _VAT_STRONG = /^(?:vat|value\sadded\stax|ภาษีมูลค่าเพิ่ม)(?=[\s%.,฿$\d]|$)/i;

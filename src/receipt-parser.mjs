@@ -277,13 +277,14 @@ function categorySummaryLines(rows,lines){
 function markQuantityColumns(origins){
   const candidates=origins.filter(origin=>{
     const tokens=tokenizeLine(origin.clean),middle=tokens.slice(1,-1),last=tokens.at(-1);
+    // With no separate quantity, this conventional numeric product name is a
+    // competing interpretation even when neighboring rows establish a column.
+    if(/^7\s+up\s+\S+$/i.test(origin.clean))return false;
     return !origin.alignedFields&&!origin.tableAmbiguous&&tokens[0]?.couldBeQty&&middle.some(t=>/\p{L}/u.test(t.raw))&&middle.at(-1)?.type!=='number'&&(receiptNumber(last?.raw??'')!==null||last?.raw==='?');
   });
-  const names=new Map();
-  for(const c of candidates){const parts=c.clean.split(' '),token=parts[0];if(!names.has(token))names.set(token,new Set());names.get(token).add(parts.slice(1,-1).join(' '));}
-  // Repetition corroborates a column without treating isolated menu numbers as
-  // quantities. Uncorroborated values still use the existing review path.
-  for(const c of candidates)if(names.get(c.clean.split(' ')[0]).size>=2)c.quantityFirst=true;
+  // Corroborate the row structure, not the quantity value. Different quantities
+  // and row order do not change the column's meaning. A lone row stays uncertain.
+  if(candidates.length>=2)for(const c of candidates)c.quantityFirst=true;
 }
 const _SC_STRONG=/^(?:service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส)(?=[\s%.,฿$\d]|$)/i;
 const _VAT_STRONG=/^(?:vat|value\sadded\stax|ภาษีมูลค่าเพิ่ม)(?=[\s%.,฿$\d]|$)/i;
