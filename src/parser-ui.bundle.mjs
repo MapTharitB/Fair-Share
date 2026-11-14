@@ -598,6 +598,7 @@ function getReceiptDiscrepancy(row) {
 }
 function createReceiptParser({ createId = () => Math.random().toString(36).slice(2, 9) } = {}) {
   const UNIT_WORDS = /* @__PURE__ */ new Set(["ขวด", "แก้ว", "จาน ", "ชาม", "ชิ้น", "ถ้วย", "ชุด", "แพ็ค", "กล่อง", "กระป๋อง", "โหล", "ถุง", "อัน", "ที่", "หัว", "ตัว", "กิโล", "กก", "ลิตร", "มล", "คู่", "แผ่น", "เส้น", "portion", "pcs", "pc", "set", "bottle", "glass", "can", "box", "cup", "bowl"]);
+  const CATEGORY_LABELS = /* @__PURE__ */ new Set(["อาหาร", "เครื่องดื่ม", "อาหารและเครื่องดื่ม", "อื่นๆ"]);
   const r2 = (n) => Math.round(n * 100) / 100;
   const uid2 = createId;
   const stripPunct = (s) => String(s || "").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").trim();
@@ -687,6 +688,7 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
   }
   function looksComplete(line) {
     const tokens = String(line ?? "").trim().split(/\s+/);
+    if (tokens.at(-1) === "?") return true;
     if (/^-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$|^-?\d+(?:\.\d{1,2})?$/.test(tokens.at(-1))) return true;
     return tokens.length >= 4 && tokens.slice(0, 3).every((t) => receiptNumber(t) !== null) && tokens.slice(3).some((t) => /\p{L}/u.test(t));
   }
@@ -701,7 +703,7 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     const out = [];
     let i = 0;
     while (i < lines.length) {
-      if (lines[i]?.table) {
+      if (lines[i]?.table || lines[i]?.categoryHeading) {
         out.push(lines[i++]);
         continue;
       }
@@ -710,7 +712,7 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
         continue;
       }
       const parts = [lines[i++]];
-      while (i < lines.length && !lines[i]?.table && !numeric(lines[i]) && parts.length < 3) parts.push(lines[i++]);
+      while (i < lines.length && !lines[i]?.table && !lines[i]?.categoryHeading && !numeric(lines[i]) && parts.length < 3) parts.push(lines[i++]);
       let n = 0;
       while (i < lines.length && numeric(lines[i])) {
         parts.push(lines[i++]);
@@ -724,7 +726,7 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     const out = [];
     let i = 0, prevWasMeta = false;
     while (i < lines.length) {
-      const cur = lines[i], text2 = lineText(cur), meta = quickClassify(text2) === "meta";
+      const cur = lines[i], text2 = lineText(cur), meta = cur?.categoryHeading || quickClassify(text2) === "meta";
       if (cur?.table || meta || looksComplete(text2) || prevWasMeta) {
         out.push(cur);
         prevWasMeta = meta;
@@ -733,12 +735,12 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
       }
       prevWasMeta = false;
       const next = lines[i + 1], after = lines[i + 2];
-      if (next && !next?.table && quickClassify(lineText(next)) !== "meta" && !looksComplete(lineText(next)) && after && !after?.table && quickClassify(lineText(after)) !== "meta" && looksComplete(lineText(after))) {
+      if (next && !next?.table && !next?.categoryHeading && quickClassify(lineText(next)) !== "meta" && !looksComplete(lineText(next)) && after && !after?.table && !after?.categoryHeading && quickClassify(lineText(after)) !== "meta" && looksComplete(lineText(after))) {
         out.push(joinLines([cur, next, after]));
         i += 3;
         continue;
       }
-      if (next && !next?.table && quickClassify(lineText(next)) !== "meta" && /\d/.test(lineText(next))) {
+      if (next && !next?.table && !next?.categoryHeading && quickClassify(lineText(next)) !== "meta" && /\d/.test(lineText(next))) {
         out.push(joinLines([cur, next]));
         i += 2;
         continue;
@@ -969,7 +971,22 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     const substantive = (ts) => ts.some((t) => /\p{L}/u.test(t.raw));
     const nums = tokens.filter((t) => t.type === "number");
     const words = tokens.filter((t) => t.type !== "number");
+    const last = tokens.at(-1), prefix = tokens.slice(0, -1);
+    if (origin?.quantityFirst && tokens[0]?.couldBeQty && substantive(prefix.slice(1)) && prefix.at(-1)?.type !== "number") {
+      identify("quantity", tokens[0]);
+      if (price(last)) identify("total", last);
+      return row({
+        itemName: prefix.slice(1).map((t) => t.raw).join(" "),
+        qty: tokens[0].value,
+        priceValue: price(last) ? last.value : null,
+        confidence: 0.9,
+        pattern: "qty-item-price"
+      });
+    }
     let fields2 = origin?.alignedFields;
+    if (!fields2 && !origin?.tableAmbiguous && tokens[0]?.couldBeQty && price(tokens.at(-2)) && price(last) && substantive(tokens.slice(1, -2)) && (tokens.at(-2).isDefinitelyPrice && last.isDefinitelyPrice || Math.round(tokens.at(-2).value * 100) * tokens[0].value === Math.round(last.value * 100))) {
+      fields2 = { quantity: tokens[0], unit: tokens.at(-2), total: last, name: tokens.slice(1, -2).map((t) => t.raw).join(" ") };
+    }
     if (!fields2 && !origin?.tableAmbiguous && nums.length === 3 && substantive(words) && words.every((t) => t.raw !== "?")) {
       const matches = [];
       for (const quantity2 of nums.filter((t) => t.couldBeQty)) {
@@ -989,6 +1006,7 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
       identify("quantity", quantity2);
       identify("unit", unit2);
       identify("total", total);
+      if (!unit2 || !total) return row({ itemName: name2, qty: quantity2.value, priceSource: unit2 ? "unit_price" : "line_total", priceValue: (unit2 ?? total).value, confidence: 0.97, pattern: "labelled-single-price" });
       const exact = Math.round(unit2.value * 100) * quantity2.value === Math.round(total.value * 100);
       return row({
         itemName: name2,
@@ -996,10 +1014,24 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
         priceSource: exact ? "unit_price" : "line_total",
         priceValue: exact ? unit2.value : total.value,
         confidence: 0.97,
-        pattern: "unit-qty-total"
+        pattern: "unit-qty-total",
+        flags: exact ? [] : [{ type: "calc_mismatch", msg: `ราคา ${unit2.literal ?? unit2.raw} × ${quantity2.literal ?? quantity2.raw} ไม่ตรงกับยอด ${total.literal ?? total.raw} ในใบเสร็จ` }]
       });
     }
-    const last = tokens.at(-1), prefix = tokens.slice(0, -1);
+    const quantity = prefix.at(-1), simpleName = prefix.slice(0, -1);
+    const nameNumbers = simpleName.every((t, i) => t.type !== "number" || /\p{L}/u.test(simpleName[i + 1]?.raw ?? ""));
+    if (!origin?.alignedFields && price(last) && quantity?.couldBeQty && substantive(simpleName) && nameNumbers) {
+      identify("quantity", quantity);
+      identify("total", last);
+      return row({
+        itemName: simpleName.map((t) => t.raw).join(" "),
+        qty: quantity.value,
+        priceValue: last.value,
+        confidence: 0.8,
+        pattern: "item-qty-price",
+        flags: last.value > 0 && quantity.value >= last.value ? [{ type: "qty_gte_price", msg: `qty(${quantity.value}) >= price(${last.value})` }] : []
+      });
+    }
     if (last?.raw === "?") {
       const qty = prefix.at(-1)?.couldBeQty ? prefix.at(-1) : null;
       if (qty) identify("quantity", qty);
@@ -1036,25 +1068,17 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     }
     const leading = prefix[0]?.type === "number" && substantive(prefix.slice(1));
     const fractional = prefix.at(-1)?.type === "number" && !prefix.at(-1).isInteger;
-    if (leading && !origin?.labeledQty || fractional) {
+    const invalidQuantity = prefix.at(-1)?.type === "number" && !prefix.at(-1).couldBeQty;
+    if (leading && !origin?.labeledQty || fractional || invalidQuantity) {
       identify("quantity", leading ? prefix[0] : prefix.at(-1));
       return row({ itemName: prefix.map((t) => t.raw).join(" "), qty: null, priceValue: last.value, issues: { qty: fieldIssue("ambiguous", "qty") }, pattern: "ambiguous-quantity" });
     }
-    const quantity = prefix.at(-1), simpleName = prefix.slice(0, -1);
-    const nameNumbers = simpleName.every((t, i) => t.type !== "number" || simpleName[i - 1]?.type === "text" && simpleName[i + 1]?.type === "text");
-    if (quantity?.couldBeQty && substantive(simpleName) && nameNumbers) {
-      identify("quantity", quantity);
-      return row({
-        itemName: simpleName.map((t) => t.raw).join(" "),
-        qty: quantity.value,
-        priceValue: last.value,
-        confidence: 0.8,
-        pattern: "item-qty-price",
-        flags: quantity.value >= last.value ? [{ type: "qty_gte_price", msg: `qty(${quantity.value}) >= price(${last.value})` }] : []
-      });
-    }
     const internalNumber = prefix.findIndex((t) => t.type === "number");
-    if (internalNumber > 0 && prefix.slice(internalNumber + 1).some((t) => t.type === "text")) return row({ itemName: prefix.map((t) => t.raw).join(" "), priceValue: last.value, confidence: 0.8, pattern: "named-number" });
+    if (internalNumber > 0 && prefix.slice(internalNumber + 1).some((t) => /\p{L}/u.test(t.raw))) {
+      const ambiguous2 = prefix[internalNumber + 1]?.type === "unit";
+      if (ambiguous2) identify("quantity", prefix[internalNumber]);
+      return row({ itemName: prefix.map((t) => t.raw).join(" "), qty: ambiguous2 ? null : 1, priceValue: last.value, confidence: 0.8, pattern: "named-number", issues: ambiguous2 ? { qty: fieldIssue("ambiguous", "qty") } : {} });
+    }
     const best = findBestAssignment(tokens, ctx);
     if (!best) return row({ itemName: stripped });
     const used = new Set([best.lt.i, best.qt?.i, best.up?.i].filter((v) => v != null));
@@ -1108,6 +1132,70 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     const pct = (arr, p) => arr[Math.floor(arr.length * p)] ?? arr[arr.length - 1];
     return { p10: pct(prices, 0.1), p25: pct(prices, 0.25), p75: pct(prices, 0.75), p90: pct(prices, 0.9), minPrice: prices[0], maxPrice: prices[prices.length - 1], maxQty: Math.max(...qtys) };
   }
+  function taxBreakdownLines(lines) {
+    const records = lines.map((text2, index) => ({ text: normalizeText2(text2), index })).filter((r) => r.text);
+    const labels = [/^before\s+vat\s*:?\s+(.+)$/i, /^vat\s+items?\s*:?\s+(.+)$/i, /^vat\s+included\s*:?\s+(.+)$/i];
+    const metadata = /* @__PURE__ */ new Set();
+    for (let i = 0; i + 2 < records.length; i++) {
+      if (labels.every((re, j) => {
+        const m = records[i + j].text.match(re);
+        return m && receiptNumber(m[1]) !== null;
+      })) {
+        for (let j = 0; j < 3; j++) metadata.add(records[i + j].index);
+      }
+    }
+    return metadata;
+  }
+  function categorySummaryLines(rows, lines) {
+    const candidates = lines.flatMap((raw, index) => {
+      const match = normalizeText2(raw).match(/^(.+?)\s+(-?[\d,]+(?:\.\d{1,2})?)$/);
+      const value = match && CATEGORY_LABELS.has(match[1]) ? receiptNumber(match[2].replace(/^-/, "")) : null;
+      return value !== null ? [{ index, cents: Math.round(value * 100) * (match[2].startsWith("-") ? -1 : 1) }] : [];
+    });
+    const categoryIndices = new Set(candidates.map((c) => c.index));
+    function section(candidate, direction) {
+      const indices = /* @__PURE__ */ new Set();
+      for (let i = candidate.index + direction; i >= 0 && i < lines.length; i += direction) {
+        const text2 = normalizeText2(lines[i]);
+        if (categoryIndices.has(i) || isSummaryOrMetaLine(text2) && !DISCOUNT_RE.test(text2)) break;
+        indices.add(i);
+      }
+      const purchases = rows.filter((r) => r.evidence.sourceLines.every((i) => indices.has(i)) && !categoryIndices.has(r.evidence.sourceLines[0]));
+      if (purchases.some((r) => Object.keys(r.issues).length || r.qty === null || r.priceValue === null)) return { count: purchases.length, matches: false };
+      let count = purchases.length, amount = purchases.reduce((n, r) => n + Math.round(getDerivedValues2(r).lineTotal * 100), 0);
+      for (const i of indices) {
+        const text2 = normalizeText2(lines[i]);
+        if (!DISCOUNT_RE.test(text2) || /%/.test(text2)) continue;
+        const token = text2.split(/\s+/).at(-1), value = receiptNumber(token?.replace(/^-/, "") ?? "");
+        if (value !== null) {
+          amount -= Math.round(value * 100);
+          count++;
+        }
+      }
+      return { count, matches: count > 0 && amount === candidate.cents };
+    }
+    const proofs = candidates.map((c) => {
+      const sections = [section(c, 1), section(c, -1)];
+      return { index: c.index, count: Math.max(...sections.filter((s) => s.matches).map((s) => s.count), 0), possible: Math.max(...sections.map((s) => s.count)) };
+    });
+    const corroboratedSections = proofs.some((p) => p.count >= 2);
+    const metadata = new Set(proofs.filter((p) => p.count >= 2 || corroboratedSections && p.count >= 1).map((p) => p.index));
+    const ambiguous = new Set(proofs.filter((p) => !metadata.has(p.index) && p.possible >= 2).map((p) => p.index));
+    return { metadata, ambiguous };
+  }
+  function markQuantityColumns(origins) {
+    const candidates = origins.filter((origin) => {
+      const tokens = tokenizeLine(origin.clean), middle = tokens.slice(1, -1), last = tokens.at(-1);
+      return !origin.alignedFields && !origin.tableAmbiguous && tokens[0]?.couldBeQty && middle.some((t) => /\p{L}/u.test(t.raw)) && middle.at(-1)?.type !== "number" && (receiptNumber(last?.raw ?? "") !== null || last?.raw === "?");
+    });
+    const names = /* @__PURE__ */ new Map();
+    for (const c of candidates) {
+      const parts = c.clean.split(" "), token = parts[0];
+      if (!names.has(token)) names.set(token, /* @__PURE__ */ new Set());
+      names.get(token).add(parts.slice(1, -1).join(" "));
+    }
+    for (const c of candidates) if (names.get(c.clean.split(" ")[0]).size >= 2) c.quantityFirst = true;
+  }
   const _SC_STRONG = /^(?:service\scharge|servicecharge|svc\scharge|ค่าบริการ|ค่าเซอร์วิส)(?=[\s%.,฿$\d]|$)/i;
   const _VAT_STRONG = /^(?:vat|value\sadded\stax|ภาษีมูลค่าเพิ่ม)(?=[\s%.,฿$\d]|$)/i;
   const _SC_WEAK = /^sc(?=[\s%.,\d]|$)/i;
@@ -1148,7 +1236,9 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     return DISCOUNT_RE.test(raw) || DISCOUNT_RE.test(norm);
   }
   function extractSummarySources2(rawLines, onEntries) {
+    const metadata = taxBreakdownLines(rawLines);
     const entries = rawLines.map((raw, index) => {
+      if (metadata.has(index)) return null;
       const norm = _normSumLine(receiptDigits(raw));
       if (!norm || /^(?:vat|tax|service charge|discount)\s+(?:amount|rate|subtotal|items?)$/i.test(norm)) return null;
       if (POST_DISCOUNT_TOTAL_RE.test(nfc(raw).trim())) return null;
@@ -1235,6 +1325,8 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
   function preprocessReceipt2(rawText, { preserveItemLines = false } = {}) {
     const literalLines = String(rawText ?? "").split(/\r\n|\r|\n/);
     const records = literalLines.map((line, i) => ({ text: normalizeText2(line), sourceLines: [i], table: line.includes("	") })).filter((r) => r.text);
+    const headings = records.filter((r, i) => CATEGORY_LABELS.has(r.text) && records[i + 1] && looksComplete(records[i + 1].text) && /\p{L}/u.test(records[i + 1].text));
+    if (new Set(headings.map((r) => r.text)).size >= 2) for (const heading of headings) heading.categoryHeading = true;
     const rawLines = records.map((r) => r.text), merged = preserveItemLines ? records : mergeWrappedLines2(collapseVerticalOCR(records));
     const billStyle = detectBillNumericStyle(rawLines), anchors = findMetadataAnchorIndices(merged.map(lineText));
     let headers = null;
@@ -1242,8 +1334,9 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
     const origins = [];
     for (let idx = 0; idx < merged.length; idx++) {
       const record = merged[idx], orig = record.text, literal = record.sourceLines.map((i) => literalLines[i]).join("\n");
+      if (record.categoryHeading) continue;
       const cells = literal.split("	").map((c) => normalizeText2(c));
-      if (cells.length > 1 && headerAliases.every((re) => cells.some((c) => re.test(c)))) {
+      if (cells.length > 1 && cells.some((c) => headerAliases[0].test(c)) && cells.some((c) => headerAliases[1].test(c) || headerAliases[2].test(c)) && cells.some((c) => /^(?:item|name|description|รายการ|สินค้า|รายการสินค้า)$/i.test(c))) {
         headers = cells;
         continue;
       }
@@ -1251,20 +1344,18 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
       const codeColumn = headers && cells.length > 1 ? headers.findIndex((c) => /^(?:code|item code|รหัส|no\.?)$/i.test(c)) : -1;
       const clean = stripNoiseTokens(codeColumn >= 0 ? cells.filter((_, i) => i !== codeColumn).join(" ") : orig);
       if (!clean) continue;
-      const aligned = headers && cells.length === headers.length && headerAliases.every((re) => {
-        const col = headers.findIndex((c) => re.test(c));
-        return col >= 0 && receiptNumber(cells[col], { quantity: re === headerAliases[0] }) !== null;
-      });
+      const cols = headers ? headerAliases.map((re) => headers.findIndex((c) => re.test(c))) : [];
+      const aligned = headers && cells.length === headers.length && cols[0] >= 0 && cols.some((col, i) => i > 0 && col >= 0) && cols.every((col, i) => col < 0 || receiptNumber(cells[col], { quantity: i === 0 }) !== null);
       let alignedFields = null;
       if (aligned) {
-        const cols = headerAliases.map((re) => headers.findIndex((c) => re.test(c)));
         const name = cells.filter((_, i) => i !== codeColumn && !cols.includes(i)).join(" ").trim();
         const literalCells = literal.split("	");
-        const [quantity, unit, total] = cols.map((i) => ({ literal: literalCells[i].trim(), value: receiptNumber(cells[i]) }));
+        const [quantity, unit, total] = cols.map((i) => i < 0 ? null : { literal: literalCells[i].trim(), value: receiptNumber(cells[i]) });
         if (name) alignedFields = { name, quantity, unit, total };
       }
       origins.push({ ...record, alignedFields, clean, rawLine: literal, itemCode: codeColumn >= 0 ? cells[codeColumn] : null, labeledQty: !!aligned, tableAmbiguous: !!headers && cells.length > 1 && !aligned });
     }
+    markQuantityColumns(origins);
     return { cleanLines: origins.map((r) => r.clean), rawLines, origins, literalLines };
   }
   function parseReceipt2(rawText, { recoverOmitted = false, onSummaryEntries, preserveItemLines = false } = {}) {
@@ -1286,12 +1377,18 @@ function createReceiptParser({ createId = () => Math.random().toString(36).slice
       const row = parseItemLine2(p.origin.clean, ctx, p.origin);
       return row.confidence > p.row.confidence ? { ...p, row } : p;
     });
+    const { metadata: categoryMetadata, ambiguous: categoryAmbiguities } = categorySummaryLines(pairs.map((p) => p.row), literalLines);
+    pairs = pairs.filter((p) => !p.origin.sourceLines.some((i) => categoryMetadata.has(i)));
+    for (const p of pairs) if (p.origin.sourceLines.some((i) => categoryAmbiguities.has(i))) {
+      p.row.issues.price ??= fieldIssue("ambiguous", "line_total");
+      p.row.needsReview = true;
+    }
     let rows = preserveItemLines ? pairs.map((p) => p.row) : applyZoneFilter(pairs.map((p) => p.row));
     if (recoverOmitted) {
       const represented = new Set(rows.flatMap((r) => r.evidence.sourceLines));
       for (let i = 0; i < literalLines.length; i++) {
         const text2 = normalizeText2(literalLines[i]);
-        if (represented.has(i) || !/\p{L}/u.test(text2) || !/[\d,]+\.\d{2}$/.test(text2) || STRONG_SUMMARY_RE.test(text2) || DISCOUNT_RE.test(text2) || /^(?:service|svc|sc\b|tax|grand|net|cash|รวม|ยอด|สุทธิ|โทร|tel|date|วันที่|เวลา|เลขที่|ถนน|ที่อยู่)/i.test(text2)) continue;
+        if (categoryMetadata.has(i) || represented.has(i) || !/\p{L}/u.test(text2) || !/[\d,]+\.\d{2}$/.test(text2) || STRONG_SUMMARY_RE.test(text2) || DISCOUNT_RE.test(text2) || /^(?:service|svc|sc\b|tax|grand|net|cash|รวม|ยอด|สุทธิ|โทร|tel|date|วันที่|เวลา|เลขที่|ถนน|ที่อยู่)/i.test(text2)) continue;
         const row = parseItemLine2(text2, null, { sourceLines: [i], rawLine: literalLines[i] });
         row.needsReview = true;
         row.flags.push({ type: "recovered_line", msg: "พบรายการที่ต้องตรวจสอบ" });
@@ -1553,7 +1650,7 @@ function parseDraft(raw, { id = newId, preserveItemLines = false } = {}) {
     if (a && a.value <= (a.mode === "percent" ? 100 : 1e10)) group[key] = { ...group[key], enabled: true, kind: a.mode === "percent" ? "rate" : "fixed", value: a.mode === "percent" ? Math.round(a.value * 100) : cents(a.value.toFixed(2)) };
   }
   if (source.vat) group.tax.treatment = "unknown";
-  const totalLines = normalized.split(/\r?\n/).filter((l) => /^\s*(?:grand\s*total|net\s*total|total|ยอดชำระสุทธิ|ยอดสุทธิ|ยอดรวมสุทธิ|รวมทั้งสิ้น|ยอดรวมทั้งสิ้น|รวมทั้งหมด|ยอดรวม)\s*[:：]?\s*(?:฿|\$|THB|บาท)?\s*[\d,]+(?:\.\d{1,2})?\s*(?:บาท|฿)?\s*$/i.test(l));
+  const totalLines = normalized.split(/\r?\n/).filter((l) => /^\s*(?:grand\s*total|net\s*total|total|ยอดชำระสุทธิ|ยอดสุทธิ|ยอดรวมสุทธิ|รวมสุทธิ|รวมทั้งสิ้น|ยอดรวมทั้งสิ้น|รวมทั้งหมด|ยอดรวม)\s*[:：]?\s*(?:฿|\$|THB|บาท)?\s*[\d,]+(?:\.\d{1,2})?\s*(?:บาท|฿)?\s*$/i.test(l));
   if (totalLines.length) {
     const match = totalLines.at(-1).match(/([\d,]+(?:\.\d{1,2})?)\s*(?:บาท|฿)?\s*$/);
     group.printedTotalCents = cents(match[1]);

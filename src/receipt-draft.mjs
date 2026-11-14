@@ -173,7 +173,7 @@ function parseDraft(raw,{id=newId,preserveItemLines=false}={}){
     const a=source[field];if(a&&a.value<=(a.mode==='percent'?100:1e10))group[key]={...group[key],enabled:true,kind:a.mode==='percent'?'rate':'fixed',value:a.mode==='percent'?Math.round(a.value*100):cents(a.value.toFixed(2))};
   }
   if(source.vat)group.tax.treatment='unknown';
-  const totalLines=normalized.split(/\r?\n/).filter(l=>/^\s*(?:grand\s*total|net\s*total|total|ยอดชำระสุทธิ|ยอดสุทธิ|ยอดรวมสุทธิ|รวมทั้งสิ้น|ยอดรวมทั้งสิ้น|รวมทั้งหมด|ยอดรวม)\s*[:：]?\s*(?:฿|\$|THB|บาท)?\s*[\d,]+(?:\.\d{1,2})?\s*(?:บาท|฿)?\s*$/i.test(l));
+  const totalLines=normalized.split(/\r?\n/).filter(l=>/^\s*(?:grand\s*total|net\s*total|total|ยอดชำระสุทธิ|ยอดสุทธิ|ยอดรวมสุทธิ|รวมสุทธิ|รวมทั้งสิ้น|ยอดรวมทั้งสิ้น|รวมทั้งหมด|ยอดรวม)\s*[:：]?\s*(?:฿|\$|THB|บาท)?\s*[\d,]+(?:\.\d{1,2})?\s*(?:บาท|฿)?\s*$/i.test(l));
   if(totalLines.length){const match=totalLines.at(-1).match(/([\d,]+(?:\.\d{1,2})?)\s*(?:บาท|฿)?\s*$/);group.printedTotalCents=cents(match[1]);}
   const rows=parsed.rows.filter(r=>!r.isDiscount).map(r=>({...r,id:id()}));
   const draft={id:id(),raw,group,items:[],notices};
